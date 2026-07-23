@@ -29,7 +29,23 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section("Externe Platte") {
-                TextField("Laufwerksname", text: $settings.sourceVolumeName)
+                HStack {
+                    TextField("Laufwerksname", text: $settings.sourceVolumeName)
+                    Menu {
+                        let volumes = AvailableVolumes.externalVolumeNames()
+                        if volumes.isEmpty {
+                            Text("Keine externen Laufwerke gefunden")
+                        } else {
+                            ForEach(volumes, id: \.self) { name in
+                                Button(name) { settings.sourceVolumeName = name }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "externaldrive")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
                 Text("Erwarteter Pfad: /Volumes/\(settings.sourceVolumeName)")
                     .font(.caption)
                     .foregroundStyle(.secondary)

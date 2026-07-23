@@ -7,6 +7,9 @@ import Combine
 /// Zustand wird jeweils über `FileManager.fileExists` am erwarteten Pfad neu
 /// abgeleitet (robuster als das Parsen des Notification-`userInfo`), was auch
 /// `checkNow()` beim App-Start oder nach einer Einstellungsänderung erlaubt.
+/// Zusätzlich ein grober 30-Sekunden-Fallback-Timer: manche Laufwerke (z.B.
+/// exFAT über FSKit) lösen `didMountNotification` nicht zuverlässig aus, sodass
+/// sich der Zustand sonst dauerhaft festfressen kann.
 @MainActor
 public final class VolumeMonitor: ObservableObject {
     @Published public private(set) var isMounted: Bool = false
@@ -14,6 +17,7 @@ public final class VolumeMonitor: ObservableObject {
     private var volumeName: String
     private let fileManager: FileManager
     private var observers: [NSObjectProtocol] = []
+    private var fallbackTimer: Timer?
 
     public init(volumeName: String, fileManager: FileManager = .default) {
         self.volumeName = volumeName
@@ -37,6 +41,14 @@ public final class VolumeMonitor: ObservableObject {
             Task { @MainActor in self?.checkNow() }
         }
         observers = [mountObserver, unmountObserver]
+
+        fallbackTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkNow() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fallbackTimer = timer
+
         checkNow()
     }
 
@@ -44,6 +56,8 @@ public final class VolumeMonitor: ObservableObject {
         let center = NSWorkspace.shared.notificationCenter
         observers.forEach { center.removeObserver($0) }
         observers.removeAll()
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
     }
 
     /// Muss aufgerufen werden, wenn der Nutzer den Laufwerksnamen in den Einstellungen ändert.
