@@ -2,4 +2,5 @@
 .swiftpm/
 build/
 *.xcodeproj
+.vscode/
 .DS_Store

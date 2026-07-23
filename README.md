@@ -34,13 +34,18 @@ für schnelle Iteration an der Logik in `PhotoBackupCore`).
    starten" aktivieren, danach ggf. das alte launchd-Setup deaktivieren (siehe Plan, Abschnitt
    „Migration").
 
+## Signierung
+
+`build.sh` signiert automatisch mit dem kostenlosen „Apple Development"-Zertifikat aus dem
+Schlüsselbund, sofern eines vorhanden ist (in Xcode über Settings → Accounts → Team →
+Manage Certificates → „+" → Apple Development einrichten). Dadurch bleibt die
+Code-Signatur über Neubauten hinweg stabil, und macOS fragt nicht bei jedem Rebuild erneut
+nach dem Schlüsselbund-Zugriff. Ist kein solches Zertifikat installiert, fällt der Build
+automatisch auf eine Ad-hoc-Signatur zurück (Signatur wechselt dann bei jedem Build).
+
 ## Bekannte Einschränkungen dieses Builds
 
-- **Ad-hoc-Signierung**: kein Apple-Developer-Zertifikat vorhanden, daher wechselt die
-  Code-Signatur bei jedem `./build.sh`-Lauf. macOS kann danach erneut nach dem
-  Schlüsselbund-Zugriff fragen. Für eine stabile Signatur später Xcode + kostenlose
-  Apple-ID installieren.
 - **Benachrichtigungen**: Die Berechtigungsanfrage für `UNUserNotificationCenter` kann bei
-  einer ad-hoc-signierten, nicht in `/Applications` installierten App fehlschlagen (kein
-  Absturz, Backups funktionieren trotzdem — es fehlen nur die macOS-Benachrichtigungen).
-  Nach `cp -R build/PhotoBackup.app /Applications/` und Neustart der App erneut prüfen.
+  einer nicht in `/Applications` installierten App fehlschlagen (kein Absturz, Backups
+  funktionieren trotzdem — es fehlen nur die macOS-Benachrichtigungen). Nach
+  `cp -R build/PhotoBackup.app /Applications/` und Neustart der App erneut prüfen.

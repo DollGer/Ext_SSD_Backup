@@ -25,8 +25,15 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BINARY_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
-echo "==> Signiere (ad-hoc, da kein Apple-Developer-Zertifikat installiert ist)"
-codesign --force --deep --sign - "$APP_BUNDLE"
+SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Apple Development:[^"]*"' | head -1 | tr -d '"')"
+
+if [ -n "$SIGN_IDENTITY" ]; then
+  echo "==> Signiere mit Development-Zertifikat: $SIGN_IDENTITY"
+  codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+else
+  echo "==> Signiere (ad-hoc, kein Apple-Development-Zertifikat im Schlüsselbund gefunden)"
+  codesign --force --deep --sign - "$APP_BUNDLE"
+fi
 
 echo "==> Fertig: $APP_BUNDLE"
 echo
@@ -34,8 +41,3 @@ echo "Zum Ausprobieren:  open \"$APP_BUNDLE\""
 echo "Für dauerhaften Login-Start und stabile Schlüsselbund-Zugriffe:"
 echo "  cp -R \"$APP_BUNDLE\" /Applications/"
 echo "  open /Applications/$APP_NAME.app"
-echo
-echo "Hinweis: Da ad-hoc signiert wird (keine Apple-Developer-ID vorhanden), ändert sich"
-echo "die Code-Signatur bei jedem Neubau. macOS kann dich deshalb nach einem Rebuild"
-echo "erneut nach dem Schlüsselbund-Zugriff fragen. Für eine stabile Signatur später"
-echo "Xcode installieren und ein kostenloses Apple-ID-Entwicklerzertifikat verwenden."
