@@ -50,14 +50,11 @@ public enum RetentionPolicy: Equatable, Sendable {
 
 public enum SMBMountError: Error, LocalizedError, Sendable {
     case mountFailed(String)
-    case createMountPointFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .mountFailed(let message):
             return "NAS-Share konnte nicht eingebunden werden: \(message)"
-        case .createMountPointFailed(let message):
-            return "Mount-Verzeichnis konnte nicht erstellt werden: \(message)"
         }
     }
 }

@@ -24,7 +24,16 @@ private struct GeneralTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @State private var password: String = ""
     @State private var passwordStatus: String = ""
+    @StateObject private var nasDiscovery = NASDiscovery()
+    @State private var availableShares: [String] = []
+    @State private var isLoadingShares = false
+    @State private var shareLoadError: String?
+    @State private var availableTargetFolders: [String] = []
+    @State private var isLoadingTargetFolders = false
+    @State private var targetFolderLoadError: String?
     private let keychain = KeychainStore()
+    private let shareLister = NASShareLister()
+    private let smbMounter = SMBMounter()
 
     var body: some View {
         Form {
@@ -52,8 +61,51 @@ private struct GeneralTab: View {
             }
 
             Section("NAS") {
-                TextField("Host", text: $settings.nasHost)
-                TextField("Freigabe", text: $settings.nasShare)
+                HStack {
+                    TextField("Host", text: $settings.nasHost)
+                    Menu {
+                        if nasDiscovery.discoveredHosts.isEmpty {
+                            Text("Suche im Netzwerk läuft…")
+                        } else {
+                            ForEach(nasDiscovery.discoveredHosts) { host in
+                                Button("\(host.displayName) (\(host.hostname))") {
+                                    settings.nasHost = host.hostname
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "network")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+
+                HStack {
+                    TextField("Freigabe", text: $settings.nasShare)
+                    Menu {
+                        if isLoadingShares {
+                            Text("Lädt…")
+                        } else if availableShares.isEmpty {
+                            Text("Noch nicht geladen")
+                        } else {
+                            ForEach(availableShares, id: \.self) { share in
+                                Button(share) { settings.nasShare = share }
+                            }
+                        }
+                        Divider()
+                        Button("Freigaben laden") { Task { await loadShares() } }
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                if let shareLoadError {
+                    Text(shareLoadError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 TextField("Benutzer", text: $settings.nasUser)
                 SecureField("Passwort", text: $password)
                 HStack {
@@ -73,13 +125,100 @@ private struct GeneralTab: View {
                     }
                 }
                 TextField("Mount-Punkt", text: $settings.nasMountPoint)
-                TextField("Ziel-Unterordner", text: $settings.targetSubpath)
+
+                HStack {
+                    TextField("Ziel-Unterordner", text: $settings.targetSubpath)
+                    Menu {
+                        if isLoadingTargetFolders {
+                            Text("Lädt…")
+                        } else if availableTargetFolders.isEmpty {
+                            Text("Noch nicht geladen")
+                        } else {
+                            ForEach(availableTargetFolders, id: \.self) { folder in
+                                Button(folder) { settings.targetSubpath = folder }
+                            }
+                        }
+                        Divider()
+                        Button("Ordner laden") { Task { await loadTargetFolders() } }
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                if let targetFolderLoadError {
+                    Text(targetFolderLoadError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .onAppear {
             if let stored = try? keychain.readPassword() {
                 password = stored
             }
+            nasDiscovery.start()
+        }
+        .onDisappear {
+            nasDiscovery.stop()
+        }
+    }
+
+    @MainActor
+    private func loadShares() async {
+        shareLoadError = nil
+        guard !settings.nasHost.isEmpty else {
+            shareLoadError = "Bitte zuerst einen Host eintragen."
+            return
+        }
+        guard !password.isEmpty else {
+            shareLoadError = "Bitte zuerst das Passwort eintragen."
+            return
+        }
+        isLoadingShares = true
+        defer { isLoadingShares = false }
+        do {
+            availableShares = try await shareLister.listShares(
+                host: settings.nasHost,
+                user: settings.nasUser,
+                password: password
+            )
+        } catch {
+            shareLoadError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func loadTargetFolders() async {
+        targetFolderLoadError = nil
+        guard !settings.nasHost.isEmpty, !settings.nasShare.isEmpty else {
+            targetFolderLoadError = "Bitte zuerst Host und Freigabe eintragen."
+            return
+        }
+        guard !password.isEmpty else {
+            targetFolderLoadError = "Bitte zuerst das Passwort eintragen."
+            return
+        }
+        isLoadingTargetFolders = true
+        defer { isLoadingTargetFolders = false }
+        do {
+            if !smbMounter.isMounted(mountPoint: settings.nasMountPoint) {
+                try await smbMounter.mount(
+                    host: settings.nasHost,
+                    share: settings.nasShare,
+                    user: settings.nasUser,
+                    password: password,
+                    mountPoint: settings.nasMountPoint
+                )
+            }
+            let folders = NASFolderLister.subdirectories(under: settings.nasMountPoint)
+            guard !folders.isEmpty else {
+                targetFolderLoadError = "Keine Unterordner in dieser Freigabe gefunden."
+                return
+            }
+            availableTargetFolders = folders
+        } catch {
+            targetFolderLoadError = error.localizedDescription
         }
     }
 }

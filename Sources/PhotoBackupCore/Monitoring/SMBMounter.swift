@@ -33,11 +33,12 @@ public struct SMBMounter {
         mountPoint: String,
         fileManager: FileManager = .default
     ) async throws {
-        do {
-            try fileManager.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
-        } catch {
-            throw SMBMountError.createMountPointFailed(error.localizedDescription)
-        }
+        // Nicht fatal, falls das fehlschlägt: `/Volumes` selbst gehört root und ist für normale
+        // Nutzer nicht per mkdir beschreibbar — `mount_smbfs` legt einen noch nicht existierenden
+        // Zielordner dort im Rahmen des Mount-Vorgangs selbst an (Teil des Mount-Syscalls, nicht
+        // an normale Dateisystem-Rechte gebunden). Für Mount-Punkte außerhalb von `/Volumes`
+        // erstellen wir den Ordner hier vorab, falls möglich.
+        try? fileManager.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
 
         guard
             let encodedUser = user.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed),

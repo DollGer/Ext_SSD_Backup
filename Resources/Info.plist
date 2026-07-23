@@ -26,5 +26,11 @@
 	<string>Persönliches Werkzeug, kein öffentlicher Vertrieb.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>PhotoBackup benachrichtigt dich über den Erfolg oder Misserfolg eines Backup-Laufs.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PhotoBackup sucht im lokalen Netzwerk nach dem NAS, um dessen SMB-Freigaben zur Auswahl anzubieten.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_smb._tcp</string>
+	</array>
 </dict>
 </plist>
