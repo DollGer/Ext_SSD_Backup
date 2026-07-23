@@ -12,7 +12,7 @@ struct MenuBarView: View {
                 .font(.headline)
 
             StatusRow(
-                label: "Externe Platte",
+                label: settings.sourceVolumeName,
                 ok: appState.driveMounted,
                 okText: "verbunden",
                 notOkText: "getrennt"
