@@ -1,22 +1,41 @@
 import SwiftUI
+import AppKit
 import PhotoBackupCore
+
+private enum SettingsTab: Hashable {
+    case status, general, schedule, advanced
+}
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var settings: SettingsStore
+    @State private var selectedTab: SettingsTab = .status
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
+            StatusTab()
+                .tabItem { Label("Status", systemImage: "gauge") }
+                .tag(SettingsTab.status)
             GeneralTab()
                 .tabItem { Label("Allgemein", systemImage: "gearshape") }
-            ScheduleTab()
-                .tabItem { Label("Zeitplan", systemImage: "clock") }
-            RetentionTab()
-                .tabItem { Label("Aufbewahrung", systemImage: "archivebox") }
+                .tag(SettingsTab.general)
+            ScheduleAndRetentionTab()
+                .tabItem { Label("Zeitplan & Aufbewahrung", systemImage: "calendar") }
+                .tag(SettingsTab.schedule)
             AdvancedTab()
                 .tabItem { Label("Erweitert", systemImage: "wrench.and.screwdriver") }
+                .tag(SettingsTab.advanced)
         }
         .padding()
+        .onAppear {
+            // Als reine Menüleisten-App (kein Dock-Icon) aktiviert sich PhotoBackup beim Öffnen
+            // der Einstellungen sonst nicht zwangsläufig — das Fenster kann dann hinter bereits
+            // offenen Fenstern anderer Apps landen, statt in den Vordergrund zu kommen.
+            NSApp.activate(ignoringOtherApps: true)
+            // Immer mit "Status" starten statt dem zuletzt gewählten Reiter, damit man den
+            // laufenden Fortschritt sofort sieht, wenn man die Einstellungen öffnet.
+            selectedTab = .status
+        }
     }
 }
 
@@ -36,8 +55,10 @@ private struct GeneralTab: View {
     private let smbMounter = SMBMounter()
 
     var body: some View {
-        Form {
-            Section("Externe Platte") {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Externe Platte")
+                    .font(.headline)
                 HStack {
                     TextField("Laufwerksname", text: $settings.sourceVolumeName)
                     Menu {
@@ -60,7 +81,11 @@ private struct GeneralTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("NAS") {
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("NAS")
+                    .font(.headline)
                 HStack {
                     TextField("Host", text: $settings.nasHost)
                     Menu {
@@ -152,7 +177,10 @@ private struct GeneralTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Spacer()
         }
+        .padding()
         .onAppear {
             if let stored = try? keychain.readPassword() {
                 password = stored
@@ -223,51 +251,56 @@ private struct GeneralTab: View {
     }
 }
 
-private struct ScheduleTab: View {
+private struct ScheduleAndRetentionTab: View {
     @EnvironmentObject private var settings: SettingsStore
 
     var body: some View {
-        Form {
-            Toggle("Automatisches Backup aktivieren", isOn: $settings.autoBackupEnabled)
-            HStack {
-                Text("Intervall")
-                Spacer()
-                TextField("Stunden", value: $settings.autoBackupIntervalHours, format: .number)
-                    .frame(width: 80)
-                Text("Stunden")
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Zeitplan")
+                    .font(.headline)
+                Toggle("Automatisches Backup aktivieren", isOn: $settings.autoBackupEnabled)
+                HStack {
+                    Text("Intervall")
+                    TextField("Stunden", value: $settings.autoBackupIntervalHours, format: .number)
+                        .frame(width: 60)
+                    Text("Stunden")
+                }
+                if let lastBackup = settings.lastBackupDate {
+                    Text("Letztes erfolgreiches Backup: \(lastBackup.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Noch kein erfolgreiches Backup.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            if let lastBackup = settings.lastBackupDate {
-                Text("Letztes erfolgreiches Backup: \(lastBackup.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Noch kein erfolgreiches Backup.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Aufbewahrung")
+                    .font(.headline)
+                Picker("", selection: $settings.retentionMode) {
+                    Text("Unbegrenzt").tag(RetentionMode.unlimited)
+                    Text("Anzahl begrenzen").tag(RetentionMode.count)
+                    Text("Alter begrenzen").tag(RetentionMode.age)
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+
+                if settings.retentionMode == .count {
+                    Stepper("Snapshots behalten: \(settings.retentionCount)", value: $settings.retentionCount, in: 1...365)
+                }
+                if settings.retentionMode == .age {
+                    Stepper("Max. Alter (Tage): \(settings.retentionAgeDays)", value: $settings.retentionAgeDays, in: 1...3650)
+                }
             }
+
+            Spacer()
         }
-    }
-}
-
-private struct RetentionTab: View {
-    @EnvironmentObject private var settings: SettingsStore
-
-    var body: some View {
-        Form {
-            Picker("Aufbewahrung", selection: $settings.retentionMode) {
-                Text("Unbegrenzt").tag(RetentionMode.unlimited)
-                Text("Anzahl begrenzen").tag(RetentionMode.count)
-                Text("Alter begrenzen").tag(RetentionMode.age)
-            }
-            .pickerStyle(.radioGroup)
-
-            if settings.retentionMode == .count {
-                Stepper("Snapshots behalten: \(settings.retentionCount)", value: $settings.retentionCount, in: 1...365)
-            }
-            if settings.retentionMode == .age {
-                Stepper("Max. Alter (Tage): \(settings.retentionAgeDays)", value: $settings.retentionAgeDays, in: 1...3650)
-            }
-        }
+        .padding()
     }
 }
 
@@ -277,24 +310,36 @@ private struct AdvancedTab: View {
     @State private var loginItemEnabled: Bool = LoginItemManager.isEnabled
 
     var body: some View {
-        Form {
-            Toggle("Bei Login starten", isOn: $loginItemEnabled)
-                .onChange(of: loginItemEnabled) { _, newValue in
-                    settings.launchAtLoginEnabled = newValue
-                    LoginItemManager.setEnabled(newValue)
-                }
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Bei Login starten", isOn: $loginItemEnabled)
+                    .onChange(of: loginItemEnabled) { _, newValue in
+                        settings.launchAtLoginEnabled = newValue
+                        LoginItemManager.setEnabled(newValue)
+                    }
 
-            Toggle("Erweiterte Attribute sichern (-E)", isOn: $settings.includeExtendedAttributes)
-            Text("Achtung: legt zusätzliche ._-Sidecar-Dateien an, die bei jedem Lauf neu übertragen werden und das Hardlink-Sharing zwischen Snapshots verhindern können.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Toggle("Erweiterte Attribute sichern (-E)", isOn: $settings.includeExtendedAttributes)
+                Text("Achtung: legt zusätzliche ._-Sidecar-Dateien an, die bei jedem Lauf neu übertragen werden und das Hardlink-Sharing zwischen Snapshots verhindern können.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-            Section("Ausschlussmuster") {
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Ausschlussmuster")
+                    .font(.headline)
                 ForEach(settings.rsyncExcludePatterns, id: \.self) { pattern in
-                    Text(pattern)
-                }
-                .onDelete { indexSet in
-                    settings.rsyncExcludePatterns.remove(atOffsets: indexSet)
+                    HStack {
+                        Text(pattern)
+                        Spacer()
+                        Button {
+                            settings.rsyncExcludePatterns.removeAll { $0 == pattern }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 HStack {
                     TextField("Neues Muster, z.B. *.tmp", text: $newPattern)
@@ -305,6 +350,19 @@ private struct AdvancedTab: View {
                     }
                 }
             }
+
+            Spacer()
         }
+        .padding()
+    }
+}
+
+private struct StatusTab: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            BackupStatusView()
+            Spacer()
+        }
+        .padding()
     }
 }

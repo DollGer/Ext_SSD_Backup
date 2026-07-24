@@ -45,8 +45,12 @@ struct PhotoBackupApp: App {
             SettingsView()
                 .environmentObject(appDelegate.appState)
                 .environmentObject(appDelegate.appState.settings)
-                .frame(minWidth: 480, minHeight: 420)
+                .frame(width: 520, height: 480)
         }
+        // Ohne das versucht die TabView, die Fenstergröße pro Tab an dessen Inhalt anzupassen —
+        // dabei schrumpft sie beim Wechsel zuverlässig, wächst aber beim Zurückwechseln nicht
+        // wieder (bekannter SwiftUI-Bug). Feste Größe umgeht das komplett.
+        .windowResizability(.contentSize)
     }
 
     private var statusIconName: String {

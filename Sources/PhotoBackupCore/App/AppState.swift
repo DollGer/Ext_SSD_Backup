@@ -25,6 +25,9 @@ public final class AppState: ObservableObject {
     @Published public private(set) var nasMounted: Bool = false
     @Published public private(set) var backupInProgress: Bool = false
     @Published public private(set) var currentProgress: BackupProgress?
+    /// Zeitpunkt, an dem die eigentliche Datenübertragung (nicht Aufräumen/Scannen) begonnen
+    /// hat — Basis für die geschätzte Restdauer in der UI.
+    @Published public private(set) var transferStartDate: Date?
     @Published public private(set) var lastBackupResult: BackupResult?
     @Published public var lastErrorMessage: String?
 
@@ -95,6 +98,7 @@ public final class AppState: ObservableObject {
         guard canStartBackup else { return }
         backupInProgress = true
         currentProgress = nil
+        transferStartDate = nil
         // Verhindert nur den Leerlauf-Ruhezustand (Bildschirmschoner/Inaktivität) — bei
         // zugeklapptem Deckel ohne externen Bildschirm erzwingt macOS den Schlaf trotzdem auf
         // Hardware-Ebene, das kann keine App verhindern.
@@ -153,13 +157,20 @@ public final class AppState: ObservableObject {
             excludePatterns: settings.rsyncExcludePatterns,
             includeExtendedAttributes: settings.includeExtendedAttributes,
             onProgress: { [weak self] progress in
-                Task { @MainActor in self?.currentProgress = progress }
+                Task { @MainActor in
+                    guard let self else { return }
+                    if progress.phase == .transferring, self.transferStartDate == nil {
+                        self.transferStartDate = Date()
+                    }
+                    self.currentProgress = progress
+                }
             }
         )) ?? .failure(message: "rsync konnte nicht gestartet werden")
 
         backupEngine = nil
         lastBackupResult = result
         currentProgress = nil
+        transferStartDate = nil
 
         switch result {
         case .success(_, let filesTransferred, _):
@@ -168,7 +179,7 @@ public final class AppState: ObservableObject {
             // Wie beim Cleanup oben: Löschen alter Snapshot-Ordner kann über den NAS-Mount
             // lange dauern, deshalb nicht blockierend auf dem MainActor.
             let retentionPolicy = settings.currentRetentionPolicy
-            await Task.detached(priority: .utility) {
+            _ = await Task.detached(priority: .utility) {
                 RetentionManager.prune(targetDir: targetDir, policy: retentionPolicy)
             }.value
             await notify(title: "Backup abgeschlossen", message: "\(filesTransferred) Dateien übertragen.")
