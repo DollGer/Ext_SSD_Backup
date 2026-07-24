@@ -1,14 +1,37 @@
 import Foundation
 
-public struct BackupProgress: Equatable, Sendable {
-    public var currentFile: String?
-    public var percentOfFile: Int?
-    public var overallPercentEstimate: Double?
+/// Grobe Phasen eines Laufs — insbesondere wichtig, weil das Aufräumen alter Snapshot-Ordner
+/// und der Vorab-Scan über einen langsamen/gestörten NAS-Mount unbestimmt lange dauern können,
+/// ohne dass sich `filesProcessed` schon bewegt. Ohne diese Unterscheidung sieht ein UI, das nur
+/// "0 von ? Dateien" zeigt, identisch aus, egal ob gerade wirklich nichts passiert oder ob noch
+/// vorbereitet wird.
+public enum BackupPhase: Equatable, Sendable {
+    case cleaningUp
+    case scanning
+    case transferring
+}
 
-    public init(currentFile: String? = nil, percentOfFile: Int? = nil, overallPercentEstimate: Double? = nil) {
+/// `totalFiles` stammt aus einem `--dry-run`-Vorab-Scan (siehe `BackupEngine`), da Apples
+/// `openrsync` keine Gesamtzahl vorab kennt und pro Datei erst nach deren Abschluss überhaupt
+/// eine Zeile ausgibt — unveränderte, nur hartverlinkte Dateien lösen sonst keine Prozent-
+/// Zwischenwerte aus. `overallPercentEstimate` ist entsprechend `nil`, solange kein
+/// Vorab-Scan-Ergebnis vorliegt.
+public struct BackupProgress: Equatable, Sendable {
+    public var phase: BackupPhase
+    public var currentFile: String?
+    public var filesProcessed: Int
+    public var totalFiles: Int?
+
+    public init(phase: BackupPhase, currentFile: String? = nil, filesProcessed: Int = 0, totalFiles: Int? = nil) {
+        self.phase = phase
         self.currentFile = currentFile
-        self.percentOfFile = percentOfFile
-        self.overallPercentEstimate = overallPercentEstimate
+        self.filesProcessed = filesProcessed
+        self.totalFiles = totalFiles
+    }
+
+    public var overallPercentEstimate: Double? {
+        guard let totalFiles, totalFiles > 0 else { return nil }
+        return min(Double(filesProcessed) / Double(totalFiles), 1)
     }
 }
 

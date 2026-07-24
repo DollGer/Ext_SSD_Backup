@@ -39,14 +39,16 @@ final class SnapshotNamingTests: XCTestCase {
         XCTAssertEqual(snapshots.map(\.name), validNames.sorted())
     }
 
-    func testPreviousSnapshotReturnsMostRecent() throws {
+    func testPreviousSnapshotReturnsMostRecentComplete() throws {
         let fileManager = FileManager.default
         let baseDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: baseDir) }
 
         for name in ["2024-01-01_00-00-00", "2025-01-01_00-00-00", "2023-01-01_00-00-00"] {
-            try fileManager.createDirectory(at: baseDir.appendingPathComponent(name), withIntermediateDirectories: true)
+            let dir = baseDir.appendingPathComponent(name)
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            fileManager.createFile(atPath: dir.appendingPathComponent(SnapshotNaming.completionMarkerFileName).path, contents: nil)
         }
 
         let previous = SnapshotNaming.previousSnapshot(in: baseDir.path, fileManager: fileManager)
@@ -60,5 +62,25 @@ final class SnapshotNamingTests: XCTestCase {
         defer { try? fileManager.removeItem(at: baseDir) }
 
         XCTAssertNil(SnapshotNaming.previousSnapshot(in: baseDir.path, fileManager: fileManager))
+    }
+
+    func testPreviousSnapshotIgnoresIncompleteSnapshot() throws {
+        let fileManager = FileManager.default
+        let baseDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: baseDir) }
+
+        let completeDir = baseDir.appendingPathComponent("2024-01-01_00-00-00")
+        try fileManager.createDirectory(at: completeDir, withIntermediateDirectories: true)
+        fileManager.createFile(atPath: completeDir.appendingPathComponent(SnapshotNaming.completionMarkerFileName).path, contents: nil)
+
+        // Neuer, aber abgebrochener Lauf ohne Marker-Datei.
+        try fileManager.createDirectory(at: baseDir.appendingPathComponent("2025-01-01_00-00-00"), withIntermediateDirectories: true)
+
+        let previous = SnapshotNaming.previousSnapshot(in: baseDir.path, fileManager: fileManager)
+        XCTAssertEqual(previous?.name, "2024-01-01_00-00-00")
+
+        let incomplete = SnapshotNaming.incompleteSnapshots(in: baseDir.path, fileManager: fileManager)
+        XCTAssertEqual(incomplete.map(\.name), ["2025-01-01_00-00-00"])
     }
 }

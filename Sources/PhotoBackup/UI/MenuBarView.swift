@@ -25,14 +25,29 @@ struct MenuBarView: View {
             )
 
             if appState.backupInProgress {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let file = appState.currentProgress?.currentFile {
-                        Text(file)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(phaseLabel)
+                            Spacer()
+                            Text(filesCounterText)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        if let overall = appState.currentProgress?.overallPercentEstimate {
+                            ProgressView(value: overall)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                        }
                     }
-                    ProgressView(value: appState.currentProgress?.overallPercentEstimate ?? 0)
+
+                    Text(appState.currentProgress?.currentFile ?? phaseDetailText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
                     Button("Backup abbrechen") {
                         appState.cancelBackup()
                     }
@@ -64,6 +79,32 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 280)
+    }
+
+    private var phaseLabel: String {
+        switch appState.currentProgress?.phase {
+        case .cleaningUp: return "Räume auf…"
+        case .scanning: return "Scanne…"
+        case .transferring, nil: return "Gesamtfortschritt"
+        }
+    }
+
+    private var phaseDetailText: String {
+        switch appState.currentProgress?.phase {
+        case .cleaningUp: return "Entferne unvollständigen Snapshot vom letzten Abbruch…"
+        case .scanning: return "Ermittle Dateianzahl…"
+        case .transferring, nil: return "Ermittle Dateien…"
+        }
+    }
+
+    private var filesCounterText: String {
+        guard let progress = appState.currentProgress else { return "" }
+        if let total = progress.totalFiles {
+            let percent = Int(((progress.overallPercentEstimate ?? 0) * 100).rounded())
+            return "\(progress.filesProcessed)/\(total) (\(percent)%)"
+        } else {
+            return "\(progress.filesProcessed) Dateien"
+        }
     }
 
     private func summary(for result: BackupResult) -> String {

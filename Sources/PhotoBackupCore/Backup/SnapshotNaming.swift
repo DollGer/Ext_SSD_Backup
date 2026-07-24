@@ -30,6 +30,15 @@ public enum SnapshotNaming {
         return namePattern.firstMatch(in: name, range: range) != nil
     }
 
+    /// Marker-Datei, die `BackupEngine` erst nach erfolgreichem Abschluss eines Laufs anlegt.
+    /// Unterscheidet ein vollständiges Abbild von einem abgebrochenen/unterbrochenen Snapshot,
+    /// dessen Ordner zwar existiert, aber nur einen Teil der Quelle enthält.
+    public static let completionMarkerFileName = ".complete"
+
+    public static func isComplete(_ snapshotPath: String, fileManager: FileManager = .default) -> Bool {
+        fileManager.fileExists(atPath: (snapshotPath as NSString).appendingPathComponent(completionMarkerFileName))
+    }
+
     /// Listet alle gültigen Snapshot-Verzeichnisse in `targetDir`, aufsteigend nach Datum.
     /// Verzeichnisse, deren Name nicht dem Zeitstempel-Schema entspricht, werden ignoriert.
     public static func snapshots(in targetDir: String, fileManager: FileManager = .default) -> [SnapshotInfo] {
@@ -50,8 +59,21 @@ public enum SnapshotNaming {
             .sorted { $0.date < $1.date }
     }
 
-    /// Der jüngste vorhandene Snapshot — Ziel für `--link-dest` des nächsten Laufs.
+    /// Wie `snapshots(in:)`, aber nur vollständige Läufe — Basis für `--link-dest` und
+    /// die Aufbewahrungs-Zählung, damit ein abgebrochener Lauf nie als gültiger Snapshot zählt.
+    public static func completeSnapshots(in targetDir: String, fileManager: FileManager = .default) -> [SnapshotInfo] {
+        snapshots(in: targetDir, fileManager: fileManager).filter { isComplete($0.path, fileManager: fileManager) }
+    }
+
+    /// Snapshot-Ordner, die existieren, aber nie fertig wurden (abgebrochen oder die App/der
+    /// Rechner wurde währenddessen beendet) — werden vor dem nächsten Lauf entfernt.
+    public static func incompleteSnapshots(in targetDir: String, fileManager: FileManager = .default) -> [SnapshotInfo] {
+        let completeNames = Set(completeSnapshots(in: targetDir, fileManager: fileManager).map(\.name))
+        return snapshots(in: targetDir, fileManager: fileManager).filter { !completeNames.contains($0.name) }
+    }
+
+    /// Der jüngste vollständige Snapshot — Ziel für `--link-dest` des nächsten Laufs.
     public static func previousSnapshot(in targetDir: String, fileManager: FileManager = .default) -> SnapshotInfo? {
-        snapshots(in: targetDir, fileManager: fileManager).last
+        completeSnapshots(in: targetDir, fileManager: fileManager).last
     }
 }

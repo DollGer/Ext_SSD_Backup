@@ -95,7 +95,17 @@ public final class AppState: ObservableObject {
         guard canStartBackup else { return }
         backupInProgress = true
         currentProgress = nil
-        defer { backupInProgress = false }
+        // Verhindert nur den Leerlauf-Ruhezustand (Bildschirmschoner/Inaktivität) — bei
+        // zugeklapptem Deckel ohne externen Bildschirm erzwingt macOS den Schlaf trotzdem auf
+        // Hardware-Ebene, das kann keine App verhindern.
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .userInitiated],
+            reason: "PhotoBackup-Lauf"
+        )
+        defer {
+            backupInProgress = false
+            ProcessInfo.processInfo.endActivity(activity)
+        }
 
         do {
             if !smbMounter.isMounted(mountPoint: settings.nasMountPoint) {
@@ -118,7 +128,21 @@ public final class AppState: ObservableObject {
         }
 
         let targetDir = settings.targetDir
-        let previousSnapshot = SnapshotNaming.previousSnapshot(in: targetDir)
+        currentProgress = BackupProgress(phase: .cleaningUp)
+        // Auf einem Hintergrund-Thread: sowohl das Verzeichnis-Listing als auch insbesondere
+        // das rekursive Löschen eines abgebrochenen Snapshot-Ordners können bei einem
+        // Netzwerk-Mount (NAS über SMB) beliebig lange dauern. Synchron auf dem MainActor
+        // ausgeführt blockiert das die komplette UI ("Rad des Todes") — deshalb hier bewusst
+        // `Task.detached` statt der naheliegenden direkten Aufrufe.
+        let previousSnapshot = await Task.detached(priority: .utility) { () -> SnapshotInfo? in
+            let fileManager = FileManager.default
+            // Ordner von abgebrochenen/unterbrochenen Läufen räumen: sie sind nie ein
+            // vollständiges Abbild und würden sonst als Datenleiche auf dem NAS liegen bleiben.
+            for incomplete in SnapshotNaming.incompleteSnapshots(in: targetDir, fileManager: fileManager) {
+                try? fileManager.removeItem(atPath: incomplete.path)
+            }
+            return SnapshotNaming.previousSnapshot(in: targetDir, fileManager: fileManager)
+        }.value
         let engine = BackupEngine()
         backupEngine = engine
 
@@ -141,7 +165,12 @@ public final class AppState: ObservableObject {
         case .success(_, let filesTransferred, _):
             settings.lastBackupDate = Date()
             settings.lastBackupSucceeded = true
-            RetentionManager.prune(targetDir: targetDir, policy: settings.currentRetentionPolicy)
+            // Wie beim Cleanup oben: Löschen alter Snapshot-Ordner kann über den NAS-Mount
+            // lange dauern, deshalb nicht blockierend auf dem MainActor.
+            let retentionPolicy = settings.currentRetentionPolicy
+            await Task.detached(priority: .utility) {
+                RetentionManager.prune(targetDir: targetDir, policy: retentionPolicy)
+            }.value
             await notify(title: "Backup abgeschlossen", message: "\(filesTransferred) Dateien übertragen.")
         case .failure(let message):
             settings.lastBackupSucceeded = false
