@@ -62,7 +62,45 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(BackupEngine.parseFilesTransferred(from: "no stats here"), 0)
     }
 
-    func testFullRunProducesCompleteMirrorWithAccurateProgress() async throws {
+    /// Regression: bei einem rsync-Teilfehler (Exitcode 23/24) enthält die Ausgabe eine echte
+    /// Fehlermeldung *vor* der abschließenden Statistik — die Statistik allein darf nicht als
+    /// "Fehlermeldung" durchgereicht werden (genau das ist live passiert: "419GB gesendet,
+    /// speedup 1.00" wurde als Fehlertext angezeigt, obwohl fast alles erfolgreich lief).
+    func testExtractErrorLinesFindsRealErrorNotJustStats() {
+        let output = """
+        >f+++++++ file1.bin
+        rsync: mkstemp "/Volumes/NAS/target/weird:name.jpg" failed: Permission denied (13)
+        >f+++++++ file2.bin
+        Number of files: 8
+        Number of files transferred: 6
+        Total file size: 47 B
+        Total transferred file size: 47 B
+        Unmatched data: 47 B
+        Matched data: 0 B
+        File list size: 285 B
+        Total sent: 640 B
+        Total received: 164 B
+
+        sent 640 bytes  received 164 bytes  730909 bytes/sec
+        total size is 41  speedup is 0.05
+        """
+        let errors = BackupEngine.extractErrorLines(from: output)
+        XCTAssertEqual(errors, [#"rsync: mkstemp "/Volumes/NAS/target/weird:name.jpg" failed: Permission denied (13)"#])
+    }
+
+    func testExtractErrorLinesEmptyWhenOnlyStatsAndItemizeLines() {
+        let output = """
+        >f+++++++ file1.bin
+        cd+++++++ sub/
+        Number of files: 8
+        Number of files transferred: 6
+        sent 640 bytes  received 164 bytes  730909 bytes/sec
+        total size is 41  speedup is 0.05
+        """
+        XCTAssertEqual(BackupEngine.extractErrorLines(from: output), [])
+    }
+
+    func testFullRunMirrorsSourceWithAccurateProgress() async throws {
         let fileManager = FileManager.default
         let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = base.appendingPathComponent("source")
@@ -82,26 +120,66 @@ final class BackupEngineTests: XCTestCase {
         let result = try await engine.run(
             source: source.path,
             targetDir: target.path,
-            previousSnapshotPath: nil,
             excludePatterns: [],
             includeExtendedAttributes: false,
-            timestamp: "2030-01-01_00-00-00",
             onProgress: { progressUpdates.append($0) }
         )
 
-        guard case .success(let snapshotPath, let filesTransferred, _) = result else {
+        guard case .success(let filesTransferred, _) = result else {
             XCTFail("expected .success, got \(result)")
             return
         }
         XCTAssertEqual(filesTransferred, 6)
-        XCTAssertTrue(SnapshotNaming.isComplete(snapshotPath, fileManager: fileManager))
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("file0.txt").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("sub/nested.txt").path))
         XCTAssertFalse(progressUpdates.values.isEmpty)
         // Jeder verarbeitete Eintrag (auch Verzeichnisse) zählt zum Fortschritt; am Ende
         // sollte die verarbeitete Zahl exakt der im Vorab-Scan ermittelten Gesamtzahl entsprechen.
         XCTAssertEqual(progressUpdates.values.last?.filesProcessed, progressUpdates.values.last?.totalFiles)
     }
 
-    func testCancelledRunReturnsCancelledAndLeavesSnapshotIncomplete() async throws {
+    /// Kernverhalten des Spiegel-Modells: eine an der Quelle gelöschte Datei muss beim
+    /// nächsten Lauf auch am Ziel verschwinden (`--delete`) — keine Versionshistorie.
+    func testSecondRunPropagatesSourceDeletionAndAddition() async throws {
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = base.appendingPathComponent("source")
+        let target = base.appendingPathComponent("target")
+        try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: base) }
+
+        let keepPath = source.appendingPathComponent("keep.txt").path
+        let deleteMePath = source.appendingPathComponent("delete-me.txt").path
+        fileManager.createFile(atPath: keepPath, contents: Data("keep".utf8))
+        fileManager.createFile(atPath: deleteMePath, contents: Data("delete me".utf8))
+
+        let firstEngine = BackupEngine()
+        _ = try await firstEngine.run(
+            source: source.path, targetDir: target.path,
+            excludePatterns: [], includeExtendedAttributes: false, onProgress: { _ in }
+        )
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("delete-me.txt").path))
+
+        try fileManager.removeItem(atPath: deleteMePath)
+        fileManager.createFile(atPath: source.appendingPathComponent("new.txt").path, contents: Data("new".utf8))
+
+        let secondEngine = BackupEngine()
+        let result = try await secondEngine.run(
+            source: source.path, targetDir: target.path,
+            excludePatterns: [], includeExtendedAttributes: false, onProgress: { _ in }
+        )
+
+        guard case .success = result else {
+            XCTFail("expected .success, got \(result)")
+            return
+        }
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("keep.txt").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("new.txt").path))
+        XCTAssertFalse(fileManager.fileExists(atPath: target.appendingPathComponent("delete-me.txt").path))
+    }
+
+    func testCancelledRunReturnsCancelled() async throws {
         let fileManager = FileManager.default
         let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = base.appendingPathComponent("source")
@@ -116,10 +194,8 @@ final class BackupEngineTests: XCTestCase {
         let result = try await engine.run(
             source: source.path,
             targetDir: target.path,
-            previousSnapshotPath: nil,
             excludePatterns: [],
             includeExtendedAttributes: false,
-            timestamp: "2030-01-02_00-00-00",
             onProgress: { _ in }
         )
 
@@ -127,8 +203,6 @@ final class BackupEngineTests: XCTestCase {
             XCTFail("expected .cancelled, got \(result)")
             return
         }
-        let snapshotPath = target.appendingPathComponent("2030-01-02_00-00-00").path
-        XCTAssertFalse(SnapshotNaming.isComplete(snapshotPath, fileManager: fileManager))
     }
 }
 

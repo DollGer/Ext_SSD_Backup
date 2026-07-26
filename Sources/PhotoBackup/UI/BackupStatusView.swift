@@ -83,7 +83,6 @@ struct BackupStatusView: View {
 
     private var phaseLabel: String {
         switch appState.currentProgress?.phase {
-        case .cleaningUp: return "Räume auf…"
         case .scanning: return "Scanne…"
         case .transferring, nil: return "Gesamtfortschritt"
         }
@@ -91,7 +90,6 @@ struct BackupStatusView: View {
 
     private var phaseDetailText: String {
         switch appState.currentProgress?.phase {
-        case .cleaningUp: return "Entferne unvollständigen Snapshot vom letzten Abbruch…"
         case .scanning: return "Ermittle Dateianzahl…"
         case .transferring, nil: return "Ermittle Dateien…"
         }
@@ -134,7 +132,7 @@ struct BackupStatusView: View {
 
     private func summary(for result: BackupResult) -> String {
         switch result {
-        case .success(_, let filesTransferred, _):
+        case .success(let filesTransferred, _):
             return "Letztes Backup: \(filesTransferred) Dateien übertragen."
         case .failure(let message):
             return "Letztes Backup fehlgeschlagen: \(message)"

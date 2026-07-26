@@ -19,8 +19,8 @@ struct SettingsView: View {
             GeneralTab()
                 .tabItem { Label("Allgemein", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
-            ScheduleAndRetentionTab()
-                .tabItem { Label("Zeitplan & Aufbewahrung", systemImage: "calendar") }
+            ScheduleTab()
+                .tabItem { Label("Zeitplan", systemImage: "calendar") }
                 .tag(SettingsTab.schedule)
             AdvancedTab()
                 .tabItem { Label("Erweitert", systemImage: "wrench.and.screwdriver") }
@@ -251,51 +251,26 @@ private struct GeneralTab: View {
     }
 }
 
-private struct ScheduleAndRetentionTab: View {
+private struct ScheduleTab: View {
     @EnvironmentObject private var settings: SettingsStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Zeitplan")
-                    .font(.headline)
-                Toggle("Automatisches Backup aktivieren", isOn: $settings.autoBackupEnabled)
-                HStack {
-                    Text("Intervall")
-                    TextField("Stunden", value: $settings.autoBackupIntervalHours, format: .number)
-                        .frame(width: 60)
-                    Text("Stunden")
-                }
-                if let lastBackup = settings.lastBackupDate {
-                    Text("Letztes erfolgreiches Backup: \(lastBackup.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Noch kein erfolgreiches Backup.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Automatisches Backup aktivieren", isOn: $settings.autoBackupEnabled)
+            HStack {
+                Text("Intervall")
+                TextField("Stunden", value: $settings.autoBackupIntervalHours, format: .number)
+                    .frame(width: 60)
+                Text("Stunden")
             }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Aufbewahrung")
-                    .font(.headline)
-                Picker("", selection: $settings.retentionMode) {
-                    Text("Unbegrenzt").tag(RetentionMode.unlimited)
-                    Text("Anzahl begrenzen").tag(RetentionMode.count)
-                    Text("Alter begrenzen").tag(RetentionMode.age)
-                }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
-
-                if settings.retentionMode == .count {
-                    Stepper("Snapshots behalten: \(settings.retentionCount)", value: $settings.retentionCount, in: 1...365)
-                }
-                if settings.retentionMode == .age {
-                    Stepper("Max. Alter (Tage): \(settings.retentionAgeDays)", value: $settings.retentionAgeDays, in: 1...3650)
-                }
+            if let lastBackup = settings.lastBackupDate {
+                Text("Letztes erfolgreiches Backup: \(lastBackup.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Noch kein erfolgreiches Backup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -319,7 +294,7 @@ private struct AdvancedTab: View {
                     }
 
                 Toggle("Erweiterte Attribute sichern (-E)", isOn: $settings.includeExtendedAttributes)
-                Text("Achtung: legt zusätzliche ._-Sidecar-Dateien an, die bei jedem Lauf neu übertragen werden und das Hardlink-Sharing zwischen Snapshots verhindern können.")
+                Text("Achtung: legt zusätzliche ._-Sidecar-Dateien an, die bei jedem Lauf neu übertragen werden, auch ohne echte Änderung.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

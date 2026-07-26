@@ -1,21 +1,22 @@
 import Foundation
 
-/// Führt den eigentlichen rsync-Lauf aus und erzeugt einen inkrementellen,
-/// Time-Machine-artigen Snapshot mittels `--link-dest`.
+/// Führt den eigentlichen rsync-Lauf aus: ein reiner 1:1-Spiegel des Quelllaufwerks im
+/// konfigurierten Zielordner. Kein Snapshot-Verlauf, keine Versionen — `--delete` sorgt
+/// dafür, dass am Quelllaufwerk gelöschte Dateien auch aus dem Backup verschwinden. Bewusste
+/// Design-Entscheidung: wer eine Datei aus Versehen löscht, verliert sie auch im Backup: es
+/// gibt keine ältere Version zum Wiederherstellen.
 ///
 /// Wichtig: dieses System nutzt Apples `openrsync` (kein klassisches rsync 3.x) —
 /// `--info=progress2` wird NICHT unterstützt. Ebenso liefert `--progress` bei openrsync
 /// pro Datei erst *nach* deren Abschluss eine einzelne Zeile (immer "100%", nie
-/// Zwischenwerte) und unveränderte, nur hartverlinkte Dateien lösen gar keine Zeile aus —
-/// als Live-Fortschritt ist das irreführend. Stattdessen: `--itemize-changes` zeigt
-/// *jede* verarbeitete Datei (auch Hardlinks), was in Kombination mit einem vorherigen
+/// Zwischenwerte) und unveränderte Dateien lösen gar keine Zeile aus — als Live-Fortschritt
+/// ist das irreführend. Stattdessen: `--itemize-changes` zeigt *jede* verarbeitete Datei
+/// (auch unveränderte und gelöschte), was in Kombination mit einem vorherigen
 /// `--dry-run`-Scan (liefert die echte Gesamtzahl über `Number of files:`) einen
 /// korrekten Gesamtfortschritt ermöglicht.
 ///
 /// `-E`/Extended Attributes ist standardmäßig aus: openrsync legt dafür
-/// AppleDouble-Sidecar-Dateien (`._name`) an, die bei jedem Lauf neu übertragen
-/// werden, auch ohne echte Änderung — das würde das Hardlink-Sharing gegen
-/// `--link-dest` durchbrechen.
+/// AppleDouble-Sidecar-Dateien (`._name`) an, die bei jedem Lauf neu übertragen würden.
 public final class BackupEngine: @unchecked Sendable {
     private static let rsyncPath = "/usr/bin/rsync"
     /// `script` hängt ein Pseudo-Terminal vor `rsync`. Ohne das puffert die libc-`stdio` des
@@ -42,26 +43,20 @@ public final class BackupEngine: @unchecked Sendable {
     public func run(
         source: String,
         targetDir: String,
-        previousSnapshotPath: String?,
         excludePatterns: [String],
         includeExtendedAttributes: Bool,
-        timestamp: String = SnapshotNaming.timestampString(),
         fileManager: FileManager = .default,
         onProgress: @escaping (BackupProgress) -> Void
     ) async throws -> BackupResult {
         try? fileManager.createDirectory(atPath: targetDir, withIntermediateDirectories: true)
 
-        let destination = (targetDir as NSString).appendingPathComponent(timestamp)
         let source = source.hasSuffix("/") ? source : source + "/"
-        let destinationWithSlash = destination.hasSuffix("/") ? destination : destination + "/"
+        let destinationWithSlash = targetDir.hasSuffix("/") ? targetDir : targetDir + "/"
 
         func baseArguments() -> [String] {
-            var arguments = ["-a"]
+            var arguments = ["-a", "--delete"]
             if includeExtendedAttributes {
                 arguments.append("--extended-attributes")
-            }
-            if let previousSnapshotPath {
-                arguments.append("--link-dest=\(previousSnapshotPath)")
             }
             for pattern in excludePatterns {
                 arguments.append("--exclude=\(pattern)")
@@ -70,7 +65,12 @@ public final class BackupEngine: @unchecked Sendable {
         }
 
         onProgress(BackupProgress(phase: .scanning))
+        // -1: Mit `--delete` überspringt openrsync beim `--itemize-changes`-Log konsequent
+        // den Eintrag für das Sync-Wurzelverzeichnis selbst (Unterordner werden normal
+        // gemeldet, nur die Wurzel nicht) — gemessen, kein Sonderfall, kein Zufall. Ohne diese
+        // Korrektur bliebe der Fortschrittsbalken für immer bei (Gesamtzahl - 1) hängen.
         let totalFiles = await preScanFileCount(baseArguments: baseArguments(), source: source, destination: destinationWithSlash)
+            .map { max($0 - 1, 0) }
         guard !isCancelled else { return .cancelled }
 
         onProgress(BackupProgress(phase: .transferring, totalFiles: totalFiles))
@@ -121,9 +121,7 @@ public final class BackupEngine: @unchecked Sendable {
 
         if process.terminationStatus == 0 {
             let filesTransferred = Self.parseFilesTransferred(from: lastStatsText)
-            let markerPath = (destination as NSString).appendingPathComponent(SnapshotNaming.completionMarkerFileName)
-            fileManager.createFile(atPath: markerPath, contents: nil)
-            return .success(snapshotPath: destination, filesTransferred: filesTransferred, duration: duration)
+            return .success(filesTransferred: filesTransferred, duration: duration)
         } else if isCancelled || process.terminationReason == .uncaughtSignal {
             return .cancelled
         } else {
@@ -132,19 +130,24 @@ public final class BackupEngine: @unchecked Sendable {
             // und dient nur noch als Fallback für Fehler von `script` selbst.
             let stderrMessage = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let tailMessage = lastStatsText
-                .split(separator: "\n")
-                .suffix(5)
-                .joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let errorLines = Self.extractErrorLines(from: lastStatsText)
+            let filesTransferred = Self.parseFilesTransferred(from: lastStatsText)
 
             let message: String
             if !stderrMessage.isEmpty {
                 message = stderrMessage
-            } else if !tailMessage.isEmpty {
-                message = tailMessage
+            } else if !errorLines.isEmpty {
+                // rsync kann bei einem Teilfehler (z.B. einzelne Dateien mit ungültigen Namen
+                // fürs Zieldateisystem) trotzdem den Großteil erfolgreich übertragen — die
+                // reine Statistik-Zeile am Ende wäre hier keine hilfreiche Fehlermeldung.
+                message = "\(filesTransferred) Dateien übertragen, aber einzelne Fehler (Status \(process.terminationStatus)):\n" + errorLines.joined(separator: "\n")
             } else {
-                message = "rsync beendet mit Status \(process.terminationStatus)"
+                let tailMessage = lastStatsText
+                    .split(separator: "\n")
+                    .suffix(5)
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                message = tailMessage.isEmpty ? "rsync beendet mit Status \(process.terminationStatus)" : tailMessage
             }
             return .failure(message: message)
         }
@@ -156,10 +159,6 @@ public final class BackupEngine: @unchecked Sendable {
     }
 
     /// Ermittelt die echte Gesamtzahl der zu verarbeitenden Dateien über einen `--dry-run`.
-    /// Bei bestehendem `--link-dest` gibt openrsync im Dry-Run harmlose
-    /// "hard link ... No such file or directory"-Meldungen auf stderr aus (da der
-    /// Zielordner mangels echtem Schreiben nicht existiert) — die werden bewusst verworfen,
-    /// der Exit-Code bleibt davon unberührt.
     private func preScanFileCount(baseArguments: [String], source: String, destination: String) async -> Int? {
         let process = Process()
         self.process = process
@@ -185,9 +184,10 @@ public final class BackupEngine: @unchecked Sendable {
     }
 
     /// Erste Zeichen gültiger `--itemize-changes`-Update-Codes (siehe rsync-Manpage:
-    /// `<`, `>`, `c`, `h`, `.`, `*`). Wichtig zur Abgrenzung von der `--stats`-Zusammenfassung,
-    /// die im selben stdout-Stream direkt danach folgt ("Number of files: …", "sent … bytes …")
-    /// — ohne diesen Filter würden deren Zeilen fälschlich als verarbeitete Dateien gezählt.
+    /// `<`, `>`, `c`, `h`, `.`, `*` — `*` deckt u.a. `*deleting` ab). Wichtig zur Abgrenzung
+    /// von der `--stats`-Zusammenfassung, die im selben stdout-Stream direkt danach folgt
+    /// ("Number of files: …", "sent … bytes …") — ohne diesen Filter würden deren Zeilen
+    /// fälschlich als verarbeitete Dateien gezählt.
     private static let itemizeLeadCharacters = Set("<>ch.*")
 
     /// Simuliert, was ein echtes Terminal beim Rendern von Backspace-Zeichen tut: das
@@ -234,5 +234,31 @@ public final class BackupEngine: @unchecked Sendable {
             return 0
         }
         return Int(statsText[r].replacingOccurrences(of: ",", with: "")) ?? 0
+    }
+
+    /// Prefixe der `--stats`-Zusammenfassung, die trotz Schlüsselwörtern wie "error" in
+    /// Dateinamen o.ä. niemals eine echte Fehlermeldung sind.
+    private static let statsLinePrefixes = [
+        "Number of", "Total ", "Unmatched data", "Matched data", "File list size",
+        "sent ", "total size is"
+    ]
+
+    /// Filtert echte Fehlermeldungen (z.B. "rsync: mkstemp ... failed: Permission denied")
+    /// aus dem kompletten Ausgabe-Mitschnitt heraus. Wichtig bei einem Teilfehler (rsync-
+    /// Exitcode 23/24): der Großteil kann erfolgreich übertragen worden sein, während die
+    /// eigentliche Fehlerursache irgendwo *vor* der abschließenden Statistik steht — ein
+    /// simples "letzte paar Zeilen" würde dann nur die Statistik zeigen, nicht den Fehler.
+    static func extractErrorLines(from statsText: String) -> [String] {
+        statsText
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                guard !line.isEmpty, parseItemizeLine(line) == nil else { return false }
+                guard !statsLinePrefixes.contains(where: { line.hasPrefix($0) }) else { return false }
+                let lower = line.lowercased()
+                return lower.contains("rsync:") || lower.contains("rsync error") || lower.contains("error")
+                    || lower.contains("denied") || lower.contains("failed") || lower.contains("cannot")
+                    || lower.contains("no such file")
+            }
     }
 }

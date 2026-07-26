@@ -34,15 +34,6 @@ public final class SettingsStore: ObservableObject {
     @Published public var autoBackupIntervalHours: Double {
         didSet { defaults.set(autoBackupIntervalHours, forKey: Keys.autoBackupIntervalHours) }
     }
-    @Published public var retentionMode: RetentionMode {
-        didSet { defaults.set(retentionMode.rawValue, forKey: Keys.retentionMode) }
-    }
-    @Published public var retentionCount: Int {
-        didSet { defaults.set(retentionCount, forKey: Keys.retentionCount) }
-    }
-    @Published public var retentionAgeDays: Int {
-        didSet { defaults.set(retentionAgeDays, forKey: Keys.retentionAgeDays) }
-    }
     @Published public var launchAtLoginEnabled: Bool {
         didSet { defaults.set(launchAtLoginEnabled, forKey: Keys.launchAtLoginEnabled) }
     }
@@ -75,9 +66,6 @@ public final class SettingsStore: ObservableObject {
         targetSubpath = defaults.string(forKey: Keys.targetSubpath) ?? "Backups/MeineFestplatte"
         autoBackupEnabled = defaults.object(forKey: Keys.autoBackupEnabled) as? Bool ?? false
         autoBackupIntervalHours = defaults.object(forKey: Keys.autoBackupIntervalHours) as? Double ?? 24
-        retentionMode = RetentionMode(rawValue: defaults.string(forKey: Keys.retentionMode) ?? "") ?? .count
-        retentionCount = defaults.object(forKey: Keys.retentionCount) as? Int ?? 14
-        retentionAgeDays = defaults.object(forKey: Keys.retentionAgeDays) as? Int ?? 30
         launchAtLoginEnabled = defaults.object(forKey: Keys.launchAtLoginEnabled) as? Bool ?? true
         rsyncExcludePatterns = defaults.stringArray(forKey: Keys.rsyncExcludePatterns) ?? [".DS_Store"]
         includeExtendedAttributes = defaults.object(forKey: Keys.includeExtendedAttributes) as? Bool ?? false
@@ -93,14 +81,6 @@ public final class SettingsStore: ObservableObject {
         (nasMountPoint as NSString).appendingPathComponent(targetSubpath)
     }
 
-    public var currentRetentionPolicy: RetentionPolicy {
-        switch retentionMode {
-        case .unlimited: return .unlimited
-        case .count: return .count(retentionCount)
-        case .age: return .age(days: retentionAgeDays)
-        }
-    }
-
     private enum Keys {
         static let sourceVolumeName = "sourceVolumeName"
         static let nasHost = "nasHost"
@@ -110,9 +90,6 @@ public final class SettingsStore: ObservableObject {
         static let targetSubpath = "targetSubpath"
         static let autoBackupEnabled = "autoBackupEnabled"
         static let autoBackupIntervalHours = "autoBackupIntervalHours"
-        static let retentionMode = "retentionMode"
-        static let retentionCount = "retentionCount"
-        static let retentionAgeDays = "retentionAgeDays"
         static let launchAtLoginEnabled = "launchAtLoginEnabled"
         static let rsyncExcludePatterns = "rsyncExcludePatterns"
         static let includeExtendedAttributes = "includeExtendedAttributes"

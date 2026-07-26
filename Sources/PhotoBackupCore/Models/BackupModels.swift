@@ -1,12 +1,11 @@
 import Foundation
 
-/// Grobe Phasen eines Laufs — insbesondere wichtig, weil das Aufräumen alter Snapshot-Ordner
-/// und der Vorab-Scan über einen langsamen/gestörten NAS-Mount unbestimmt lange dauern können,
-/// ohne dass sich `filesProcessed` schon bewegt. Ohne diese Unterscheidung sieht ein UI, das nur
+/// Grobe Phasen eines Laufs — insbesondere wichtig, weil der Vorab-Scan über einen
+/// langsamen/gestörten NAS-Mount unbestimmt lange dauern kann, ohne dass sich
+/// `filesProcessed` schon bewegt. Ohne diese Unterscheidung sieht ein UI, das nur
 /// "0 von ? Dateien" zeigt, identisch aus, egal ob gerade wirklich nichts passiert oder ob noch
 /// vorbereitet wird.
 public enum BackupPhase: Equatable, Sendable {
-    case cleaningUp
     case scanning
     case transferring
 }
@@ -36,7 +35,7 @@ public struct BackupProgress: Equatable, Sendable {
 }
 
 public enum BackupResult: Equatable, Sendable {
-    case success(snapshotPath: String, filesTransferred: Int, duration: TimeInterval)
+    case success(filesTransferred: Int, duration: TimeInterval)
     case failure(message: String)
     case cancelled
 }
@@ -44,31 +43,6 @@ public enum BackupResult: Equatable, Sendable {
 public enum BackupTrigger: Sendable {
     case manual
     case automatic
-}
-
-public struct SnapshotInfo: Equatable, Sendable, Identifiable {
-    public var id: String { name }
-    public let name: String
-    public let date: Date
-    public let path: String
-
-    public init(name: String, date: Date, path: String) {
-        self.name = name
-        self.date = date
-        self.path = path
-    }
-}
-
-public enum RetentionMode: String, CaseIterable, Sendable {
-    case unlimited
-    case count
-    case age
-}
-
-public enum RetentionPolicy: Equatable, Sendable {
-    case unlimited
-    case count(Int)
-    case age(days: Int)
 }
 
 public enum SMBMountError: Error, LocalizedError, Sendable {

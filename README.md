@@ -1,20 +1,17 @@
 # PhotoBackup
 
-Menüleisten-App für macOS: sichert eine externe Festplatte inkrementell
-(Time-Machine-artige Snapshots via `rsync --link-dest`) auf ein NAS per SMB. Ersetzt das
-ursprüngliche `~/bin/backup-external.sh` + launchd-Setup.
+Menüleisten-App für macOS: spiegelt eine externe Festplatte 1:1 (`rsync -a --delete`) auf
+ein NAS per SMB. Ersetzt das ursprüngliche `~/bin/backup-external.sh` + launchd-Setup.
 
 Swift Package statt `.xcodeproj` — lässt sich aber auch in Xcode öffnen (`Package.swift`
 doppelklicken oder den Projektordner in Xcode öffnen).
 
 ## Funktionsumfang
 
-- Inkrementelle Backups via `rsync --link-dest`: unveränderte Dateien werden zwischen
-  Snapshots hartverlinkt statt neu übertragen — spart NAS-Speicher, jeder abgeschlossene
-  Snapshot-Ordner ist trotzdem ein vollständiges Abbild des Quelllaufwerks.
-- Snapshot-Ordner werden erst nach erfolgreichem Abschluss als vollständig markiert
-  (`.complete`-Marker); ein abgebrochener/unterbrochener Lauf hinterlässt keinen gültigen
-  Snapshot und wird beim nächsten Start automatisch entfernt.
+- **Reiner 1:1-Spiegel, keine Versionen**: Neue/geänderte Dateien an der Quelle werden
+  ergänzt, am Quelllaufwerk gelöschte Dateien werden auch aus dem Backup entfernt
+  (`--delete`). Bewusste Design-Entscheidung — wer eine Datei aus Versehen löscht, verliert
+  sie auch im Backup. Es gibt keine Snapshot-Historie und keine Aufbewahrungs-Policy.
 - Laufwerks-, NAS-Host-, Freigabe- und Zielordner-Auswahl über kleine Picker-Menüs in den
   Einstellungen statt blindem Eintippen (NAS-Host-Suche per Bonjour, Freigaben über
   `smbutil view`, Zielordner durch Browsen der gemounteten Freigabe).
@@ -24,8 +21,7 @@ doppelklicken oder den Projektordner in Xcode öffnen).
   laufende Datei ist deshalb bewusst unbestimmt, kein erfundener Prozentwert).
 - Verhindert den Leerlauf-Ruhezustand während eines laufenden Backups (nicht bei
   zugeklapptem Deckel ohne externen Bildschirm — das erzwingt macOS hardwareseitig).
-- macOS-Benachrichtigungen bei Erfolg/Fehlschlag, automatischer Zeitplan, konfigurierbare
-  Aufbewahrung (Anzahl oder Alter).
+- macOS-Benachrichtigungen bei Erfolg/Fehlschlag, konfigurierbarer automatischer Zeitplan.
 
 ## Bauen & starten
 
@@ -37,8 +33,10 @@ cp -R build/PhotoBackup.app /Applications/   # für dauerhaften Betrieb / Login-
 
 `swift build` / `swift test` funktionieren auch direkt (Debug-Build ohne App-Bundle,
 für schnelle Iteration an der Logik in `PhotoBackupCore`). Die Tests decken die reine
-Business-Logik ab (Snapshot-Namensschema, Aufbewahrungs-Policy, Fortschritts-Parsing) sowie
-ein paar echte End-to-End-Läufe von `BackupEngine` gegen temporäre Verzeichnisse.
+Business-Logik ab (Fortschritts-Parsing, Zeitplan-Fälligkeit) sowie ein paar echte
+End-to-End-Läufe von `BackupEngine` gegen temporäre Verzeichnisse — inklusive eines Tests,
+der genau das Spiegel-Verhalten prüft: Datei an der Quelle löschen → nach dem nächsten Lauf
+auch am Ziel weg.
 
 ## Erste Einrichtung
 
@@ -50,12 +48,10 @@ ein paar echte End-to-End-Läufe von `BackupEngine` gegen temporäre Verzeichnis
    sobald Host + Benutzer + Passwort gesetzt sind. Passwort landet über „Passwort speichern"
    im Schlüsselbund, nicht im Klartext. Beim ersten Öffnen fragt macOS einmalig nach der
    Berechtigung für die lokale Netzwerksuche — ohne Bestätigung bleibt die Host-Suche leer.
-3. **Vor dem ersten echten Backup**: prüfen, ob Hardlinks über die SMB-Freigabe des NAS
-   funktionieren — sonst läuft das Backup zwar durch, spart aber keinen NAS-Speicher.
-4. Externe Platte anschließen, „Backup jetzt starten" (Tab Status oder Menüleisten-Dropdown)
+3. Externe Platte anschließen, „Backup jetzt starten" (Tab Status oder Menüleisten-Dropdown)
    wird aktiv, sobald Platte gemountet und NAS erreichbar sind.
-5. Erst wenn ein manueller Lauf erfolgreich war: „Automatisches Backup" (Tab Zeitplan &
-   Aufbewahrung) und „Bei Login starten" (Tab Erweitert) aktivieren.
+4. Erst wenn ein manueller Lauf erfolgreich war: „Automatisches Backup" (Tab Zeitplan) und
+   „Bei Login starten" (Tab Erweitert) aktivieren.
 
 ## Signierung
 
@@ -68,14 +64,12 @@ automatisch auf eine Ad-hoc-Signatur zurück (Signatur wechselt dann bei jedem B
 
 ## Bekannte Einschränkungen
 
+- **Kein Schutz vor versehentlichem Löschen**: siehe oben — reiner Spiegel, keine
+  Versionshistorie. Wer das braucht, sollte zusätzlich z.B. Time Machine oder ein separates
+  Snapshot-Tool einsetzen.
 - **Benachrichtigungen**: Die Berechtigungsanfrage für `UNUserNotificationCenter` kann bei
   einer nicht in `/Applications` installierten App fehlschlagen (kein Absturz, Backups
   funktionieren trotzdem — es fehlen nur die macOS-Benachrichtigungen). Nach
   `cp -R build/PhotoBackup.app /Applications/` und Neustart der App erneut prüfen.
-- **Löschen großer Ordner über SMB ist langsam**: Sowohl das Entfernen eines abgebrochenen
-  Snapshots als auch die Aufbewahrungs-Bereinigung löschen Datei für Datei über die
-  Netzwerkfreigabe — bei Zehntausenden von Dateien kann das spürbar dauern (blockiert aber
-  nicht mehr die UI). Läuft im Hintergrund, keine Aktion nötig.
-- **Kein Abbrechen während „Räume auf…“/„Scanne…“**: Der „Backup abbrechen“-Button wirkt
-  erst, sobald die eigentliche Übertragung läuft, nicht während des Aufräumens oder des
-  Vorab-Scans davor.
+- **Kein Abbrechen während „Scanne…“**: Der „Backup abbrechen“-Button wirkt erst, sobald
+  die eigentliche Übertragung läuft, nicht während des Vorab-Scans davor.

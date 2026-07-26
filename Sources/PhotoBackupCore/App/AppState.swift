@@ -4,7 +4,7 @@ import Security
 import UserNotifications
 
 /// Zentrale, von der UI beobachtete Quelle der Wahrheit. Orchestriert Monitoring,
-/// NAS-Mounting, den eigentlichen Backup-Lauf und die Aufbewahrungs-Bereinigung.
+/// NAS-Mounting und den eigentlichen Backup-Lauf.
 @MainActor
 public final class AppState: ObservableObject {
     public let settings: SettingsStore
@@ -131,29 +131,12 @@ public final class AppState: ObservableObject {
             return
         }
 
-        let targetDir = settings.targetDir
-        currentProgress = BackupProgress(phase: .cleaningUp)
-        // Auf einem Hintergrund-Thread: sowohl das Verzeichnis-Listing als auch insbesondere
-        // das rekursive Löschen eines abgebrochenen Snapshot-Ordners können bei einem
-        // Netzwerk-Mount (NAS über SMB) beliebig lange dauern. Synchron auf dem MainActor
-        // ausgeführt blockiert das die komplette UI ("Rad des Todes") — deshalb hier bewusst
-        // `Task.detached` statt der naheliegenden direkten Aufrufe.
-        let previousSnapshot = await Task.detached(priority: .utility) { () -> SnapshotInfo? in
-            let fileManager = FileManager.default
-            // Ordner von abgebrochenen/unterbrochenen Läufen räumen: sie sind nie ein
-            // vollständiges Abbild und würden sonst als Datenleiche auf dem NAS liegen bleiben.
-            for incomplete in SnapshotNaming.incompleteSnapshots(in: targetDir, fileManager: fileManager) {
-                try? fileManager.removeItem(atPath: incomplete.path)
-            }
-            return SnapshotNaming.previousSnapshot(in: targetDir, fileManager: fileManager)
-        }.value
         let engine = BackupEngine()
         backupEngine = engine
 
         let result = (try? await engine.run(
             source: settings.sourcePath,
-            targetDir: targetDir,
-            previousSnapshotPath: previousSnapshot?.path,
+            targetDir: settings.targetDir,
             excludePatterns: settings.rsyncExcludePatterns,
             includeExtendedAttributes: settings.includeExtendedAttributes,
             onProgress: { [weak self] progress in
@@ -173,15 +156,9 @@ public final class AppState: ObservableObject {
         transferStartDate = nil
 
         switch result {
-        case .success(_, let filesTransferred, _):
+        case .success(let filesTransferred, _):
             settings.lastBackupDate = Date()
             settings.lastBackupSucceeded = true
-            // Wie beim Cleanup oben: Löschen alter Snapshot-Ordner kann über den NAS-Mount
-            // lange dauern, deshalb nicht blockierend auf dem MainActor.
-            let retentionPolicy = settings.currentRetentionPolicy
-            _ = await Task.detached(priority: .utility) {
-                RetentionManager.prune(targetDir: targetDir, policy: retentionPolicy)
-            }.value
             await notify(title: "Backup abgeschlossen", message: "\(filesTransferred) Dateien übertragen.")
         case .failure(let message):
             settings.lastBackupSucceeded = false
