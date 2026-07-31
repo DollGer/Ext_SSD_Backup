@@ -127,6 +127,8 @@ public final class AppState: ObservableObject {
             nasMounted = true
         } catch {
             lastErrorMessage = error.localizedDescription
+            lastBackupResult = .failure(message: error.localizedDescription)
+            settings.lastBackupSucceeded = false
             await notify(title: "Backup fehlgeschlagen", message: error.localizedDescription)
             return
         }

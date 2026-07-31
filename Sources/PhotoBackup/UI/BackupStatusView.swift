@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import PhotoBackupCore
 
 /// Gemeinsamer Status-/Fortschrittsblock für Menüleisten-Dropdown und den
@@ -68,14 +69,22 @@ struct BackupStatusView: View {
                 }
             } else {
                 Button("Backup jetzt starten") {
+                    // Ohne das kann das Fenster beim Start (z.B. während des NAS-Mountens)
+                    // in den Hintergrund rutschen und wirkt dann, als hätte der Klick nichts
+                    // bewirkt.
+                    NSApp.activate(ignoringOtherApps: true)
                     Task { await appState.startBackup(trigger: .manual) }
                 }
                 .disabled(!appState.canStartBackup)
 
                 if let result = appState.lastBackupResult {
-                    Text(summary(for: result))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: resultIcon(for: result))
+                            .foregroundStyle(resultColor(for: result))
+                        Text(summary(for: result))
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
@@ -127,6 +136,22 @@ struct BackupStatusView: View {
             return "\(progress.filesProcessed)/\(total) (\(percent)%)"
         } else {
             return "\(progress.filesProcessed) Dateien"
+        }
+    }
+
+    private func resultIcon(for result: BackupResult) -> String {
+        switch result {
+        case .success: return "checkmark.circle.fill"
+        case .failure: return "xmark.circle.fill"
+        case .cancelled: return "minus.circle.fill"
+        }
+    }
+
+    private func resultColor(for result: BackupResult) -> Color {
+        switch result {
+        case .success: return .green
+        case .failure: return .red
+        case .cancelled: return .secondary
         }
     }
 
