@@ -48,6 +48,7 @@ public final class AppState: ObservableObject {
     }
 
     public func start() {
+        BackupLogger.log("App gestartet")
         volumeMonitor.start()
         nasReachability.startMonitoring()
         scheduler.startFallbackTimer { [weak self] in self?.evaluateScheduler() }
@@ -96,6 +97,7 @@ public final class AppState: ObservableObject {
     /// ein manueller Klick noch läuft) sofort abgewiesen wird statt zu racen.
     public func startBackup(trigger: BackupTrigger) async {
         guard canStartBackup else { return }
+        BackupLogger.log("Backup gestartet (trigger=\(trigger), quelle=\(settings.sourcePath), ziel=\(settings.targetDir))")
         backupInProgress = true
         currentProgress = nil
         transferStartDate = nil
@@ -113,6 +115,7 @@ public final class AppState: ObservableObject {
 
         do {
             if !smbMounter.isMounted(mountPoint: settings.nasMountPoint) {
+                BackupLogger.log("NAS nicht gemountet, versuche zu mounten (host=\(settings.nasHost), share=\(settings.nasShare))")
                 guard let password = try keychain.readPassword(), !password.isEmpty else {
                     throw KeychainError.readFailed(errSecItemNotFound)
                 }
@@ -123,9 +126,11 @@ public final class AppState: ObservableObject {
                     password: password,
                     mountPoint: settings.nasMountPoint
                 )
+                BackupLogger.log("NAS-Mount erfolgreich")
             }
             nasMounted = true
         } catch {
+            BackupLogger.log("NAS-Mount fehlgeschlagen: \(error.localizedDescription)")
             lastErrorMessage = error.localizedDescription
             lastBackupResult = .failure(message: error.localizedDescription)
             settings.lastBackupSucceeded = false
@@ -135,6 +140,7 @@ public final class AppState: ObservableObject {
 
         let engine = BackupEngine()
         backupEngine = engine
+        var loggedPhase: BackupPhase?
 
         let result = (try? await engine.run(
             source: settings.sourcePath,
@@ -147,6 +153,15 @@ public final class AppState: ObservableObject {
                     if progress.phase == .transferring, self.transferStartDate == nil {
                         self.transferStartDate = Date()
                     }
+                    if loggedPhase != progress.phase {
+                        loggedPhase = progress.phase
+                        switch progress.phase {
+                        case .scanning:
+                            BackupLogger.log("Vorab-Scan gestartet")
+                        case .transferring:
+                            BackupLogger.log("Übertragung gestartet (Gesamtzahl Dateien=\(progress.totalFiles.map(String.init) ?? "unbekannt"))")
+                        }
+                    }
                     self.currentProgress = progress
                 }
             }
@@ -158,20 +173,24 @@ public final class AppState: ObservableObject {
         transferStartDate = nil
 
         switch result {
-        case .success(let filesTransferred, _):
+        case .success(let filesTransferred, let duration):
+            BackupLogger.log("Backup erfolgreich: \(filesTransferred) Dateien übertragen, Dauer=\(Int(duration))s")
             settings.lastBackupDate = Date()
             settings.lastBackupSucceeded = true
             await notify(title: "Backup abgeschlossen", message: "\(filesTransferred) Dateien übertragen.")
         case .failure(let message):
+            BackupLogger.log("Backup fehlgeschlagen: \(message)")
             settings.lastBackupSucceeded = false
             lastErrorMessage = message
             await notify(title: "Backup fehlgeschlagen", message: message)
         case .cancelled:
+            BackupLogger.log("Backup abgebrochen")
             settings.lastBackupSucceeded = false
         }
     }
 
     public func cancelBackup() {
+        BackupLogger.log("Abbruch angefordert")
         backupEngine?.cancel()
     }
 

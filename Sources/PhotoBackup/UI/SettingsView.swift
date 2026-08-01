@@ -283,6 +283,7 @@ private struct AdvancedTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @State private var newPattern: String = ""
     @State private var loginItemEnabled: Bool = LoginItemManager.isEnabled
+    @State private var logPreview: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -326,9 +327,49 @@ private struct AdvancedTab: View {
                 }
             }
 
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Protokoll")
+                    .font(.headline)
+                Text("Ereignis-Historie vergangener Läufe (Start, Mount, Phasenwechsel, Ergebnis) — hilfreich zur Fehlersuche.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    Text(logPreview.isEmpty ? "Noch keine Einträge." : logPreview)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(6)
+                }
+                .frame(height: 140)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+
+                HStack {
+                    Button("Aktualisieren") { loadLogPreview() }
+                    Button("Im Finder anzeigen") {
+                        NSWorkspace.shared.activateFileViewerSelecting([BackupLogger.logFileURL])
+                    }
+                    Button("Öffnen") {
+                        NSWorkspace.shared.open(BackupLogger.logFileURL)
+                    }
+                }
+            }
+
             Spacer()
         }
         .padding()
+        .onAppear { loadLogPreview() }
+    }
+
+    private func loadLogPreview() {
+        guard let content = try? String(contentsOf: BackupLogger.logFileURL, encoding: .utf8) else {
+            logPreview = ""
+            return
+        }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        logPreview = lines.suffix(20).joined(separator: "\n")
     }
 }
 
