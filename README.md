@@ -12,6 +12,10 @@ doppelklicken oder den Projektordner in Xcode öffnen).
   ergänzt, am Quelllaufwerk gelöschte Dateien werden auch aus dem Backup entfernt
   (`--delete`). Bewusste Design-Entscheidung — wer eine Datei aus Versehen löscht, verliert
   sie auch im Backup. Es gibt keine Snapshot-Historie und keine Aufbewahrungs-Policy.
+- **Schutz vor versehentlichem Totalverlust** (drei unabhängige Ebenen, siehe unten):
+  echte Mount-Erkennung, Vorabprüfung auf leere Quelle und ein `--max-delete`-Limit.
+- **Trockenlauf-Vorschau**: zeigt vor dem Start „X neu, Y geändert, Z werden gelöscht"
+  inklusive Beispielpfaden — erst danach wird auf Wunsch wirklich gestartet.
 - Laufwerks-, NAS-Host-, Freigabe- und Zielordner-Auswahl über kleine Picker-Menüs in den
   Einstellungen statt blindem Eintippen (NAS-Host-Suche per Bonjour, Freigaben über
   `smbutil view`, Zielordner durch Browsen der gemounteten Freigabe).
@@ -22,6 +26,30 @@ doppelklicken oder den Projektordner in Xcode öffnen).
 - Verhindert den Leerlauf-Ruhezustand während eines laufenden Backups (nicht bei
   zugeklapptem Deckel ohne externen Bildschirm — das erzwingt macOS hardwareseitig).
 - macOS-Benachrichtigungen bei Erfolg/Fehlschlag, konfigurierbarer automatischer Zeitplan.
+  Ein abgebrochener Lauf wird nicht automatisch wieder aufgenommen, ein wiederholt
+  scheiternder mit wachsendem Abstand (15 min → 1 h → 4 h) statt im Minutentakt.
+- Ereignis-Protokoll unter `~/Library/Logs/PhotoBackup/backup.log`, im Reiter „Erweitert"
+  direkt einsehbar.
+
+## Schutz gegen versehentlichen Totalverlust
+
+Der Spiegel-Modus arbeitet mit `--delete`. Das birgt eine unangenehme Eigenschaft von
+rsync: Ist die **Quelle leer**, löscht ein Lauf das komplette Ziel — und beendet sich dabei
+mit Status 0, meldet also „Erfolg". Der Schaden wäre nicht einmal als Fehler erkennbar.
+Dagegen greifen drei voneinander unabhängige Ebenen:
+
+1. **Echte Mount-Erkennung.** Ob die Platte angeschlossen ist, wird über die Liste der
+   tatsächlich gemounteten Volumes bestimmt, nicht über „Verzeichnis existiert". Sonst
+   würde ein nach unsauberem Auswerfen zurückgebliebenes leeres Verzeichnis unter
+   `/Volumes` — oder ein leerer Laufwerksname, der den immer existierenden Pfad
+   `/Volumes/` ergibt — als angeschlossene Platte durchgehen.
+2. **Vorabprüfung.** Unmittelbar vor dem Lauf wird abgelehnt, wenn die Quelle leer ist,
+   das Ziel aber nicht.
+3. **`--max-delete`-Limit** (Reiter „Erweitert", Standard 1000). Sollen mehr Dateien
+   gelöscht werden, bricht rsync ab, statt weiterzumachen. Wer regelmäßig große Mengen
+   an der Quelle löscht, muss den Wert erhöhen — oder mit `0` abschalten.
+
+Zusätzlich zeigt die **Vorschau** vor dem Start, wie viele Dateien gelöscht würden.
 
 ## Bauen & starten
 
@@ -33,10 +61,10 @@ cp -R build/PhotoBackup.app /Applications/   # für dauerhaften Betrieb / Login-
 
 `swift build` / `swift test` funktionieren auch direkt (Debug-Build ohne App-Bundle,
 für schnelle Iteration an der Logik in `PhotoBackupCore`). Die Tests decken die reine
-Business-Logik ab (Fortschritts-Parsing, Zeitplan-Fälligkeit) sowie ein paar echte
-End-to-End-Läufe von `BackupEngine` gegen temporäre Verzeichnisse — inklusive eines Tests,
-der genau das Spiegel-Verhalten prüft: Datei an der Quelle löschen → nach dem nächsten Lauf
-auch am Ziel weg.
+Business-Logik ab (Fortschritts-Parsing, Zeitplan-Fälligkeit und -Sperren, Mount-Erkennung,
+Vorabprüfung) sowie echte End-to-End-Läufe von `BackupEngine` gegen temporäre Verzeichnisse
+— darunter das Spiegel-Verhalten (Datei an der Quelle löschen → nach dem nächsten Lauf auch
+am Ziel weg), das greifende `--max-delete`-Limit und der Trockenlauf.
 
 ## Erste Einrichtung
 
@@ -64,12 +92,13 @@ automatisch auf eine Ad-hoc-Signatur zurück (Signatur wechselt dann bei jedem B
 
 ## Bekannte Einschränkungen
 
-- **Kein Schutz vor versehentlichem Löschen**: siehe oben — reiner Spiegel, keine
-  Versionshistorie. Wer das braucht, sollte zusätzlich z.B. Time Machine oder ein separates
-  Snapshot-Tool einsetzen.
+- **Keine Versionshistorie**: reiner Spiegel. Die Schutzebenen oben verhindern den
+  versehentlichen *Total*verlust, aber nicht, dass eine einzeln gelöschte Datei beim
+  nächsten Lauf auch aus dem Backup verschwindet. Wer das braucht, sollte zusätzlich
+  z.B. Time Machine oder ein separates Snapshot-Tool einsetzen.
 - **Benachrichtigungen**: Die Berechtigungsanfrage für `UNUserNotificationCenter` kann bei
   einer nicht in `/Applications` installierten App fehlschlagen (kein Absturz, Backups
   funktionieren trotzdem — es fehlen nur die macOS-Benachrichtigungen). Nach
   `cp -R build/PhotoBackup.app /Applications/` und Neustart der App erneut prüfen.
-- **Kein Abbrechen während „Scanne…“**: Der „Backup abbrechen“-Button wirkt erst, sobald
-  die eigentliche Übertragung läuft, nicht während des Vorab-Scans davor.
+- **Kein Abbrechen während des NAS-Mountens**: Der „Backup abbrechen“-Button wirkt ab dem
+  Vorab-Scan, aber nicht in der kurzen Phase davor, in der die Freigabe eingebunden wird.

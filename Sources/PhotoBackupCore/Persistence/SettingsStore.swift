@@ -43,6 +43,12 @@ public final class SettingsStore: ObservableObject {
     @Published public var includeExtendedAttributes: Bool {
         didSet { defaults.set(includeExtendedAttributes, forKey: Keys.includeExtendedAttributes) }
     }
+    /// Obergrenze für Löschungen pro Lauf (`--max-delete`); `0` schaltet die Grenze ab.
+    /// Sicherheitsnetz gegen einen Lauf, der wegen einer falsch erkannten Quelle große
+    /// Teile des Backups entfernen würde — rsync bricht dann ab, statt weiterzulöschen.
+    @Published public var maxDeleteCount: Int {
+        didSet { defaults.set(maxDeleteCount, forKey: Keys.maxDeleteCount) }
+    }
     @Published public var lastBackupDate: Date? {
         didSet { defaults.set(lastBackupDate, forKey: Keys.lastBackupDate) }
     }
@@ -69,6 +75,7 @@ public final class SettingsStore: ObservableObject {
         launchAtLoginEnabled = defaults.object(forKey: Keys.launchAtLoginEnabled) as? Bool ?? true
         rsyncExcludePatterns = defaults.stringArray(forKey: Keys.rsyncExcludePatterns) ?? [".DS_Store"]
         includeExtendedAttributes = defaults.object(forKey: Keys.includeExtendedAttributes) as? Bool ?? false
+        maxDeleteCount = defaults.object(forKey: Keys.maxDeleteCount) as? Int ?? 1000
         lastBackupDate = defaults.object(forKey: Keys.lastBackupDate) as? Date
         lastBackupSucceeded = defaults.object(forKey: Keys.lastBackupSucceeded) as? Bool
     }
@@ -93,6 +100,7 @@ public final class SettingsStore: ObservableObject {
         static let launchAtLoginEnabled = "launchAtLoginEnabled"
         static let rsyncExcludePatterns = "rsyncExcludePatterns"
         static let includeExtendedAttributes = "includeExtendedAttributes"
+        static let maxDeleteCount = "maxDeleteCount"
         static let lastBackupDate = "lastBackupDate"
         static let lastBackupSucceeded = "lastBackupSucceeded"
     }

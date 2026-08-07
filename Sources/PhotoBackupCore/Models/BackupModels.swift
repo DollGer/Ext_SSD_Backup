@@ -34,6 +34,28 @@ public struct BackupProgress: Equatable, Sendable {
     }
 }
 
+/// Ergebnis eines `--dry-run`-Laufs: was ein echter Lauf jetzt tun *würde*. Vor allem
+/// `deletedCount` ist die interessante Zahl — im Spiegel-Modus ist das der Teil, der sich
+/// nicht rückgängig machen lässt.
+public struct BackupPreview: Equatable, Sendable {
+    public var newCount: Int
+    public var changedCount: Int
+    public var deletedCount: Int
+    /// Erste paar zu löschende Pfade, damit man die Zahl einordnen kann.
+    public var deletedSamples: [String]
+
+    public init(newCount: Int = 0, changedCount: Int = 0, deletedCount: Int = 0, deletedSamples: [String] = []) {
+        self.newCount = newCount
+        self.changedCount = changedCount
+        self.deletedCount = deletedCount
+        self.deletedSamples = deletedSamples
+    }
+
+    public var hasChanges: Bool {
+        newCount > 0 || changedCount > 0 || deletedCount > 0
+    }
+}
+
 public enum BackupResult: Equatable, Sendable {
     case success(filesTransferred: Int, duration: TimeInterval)
     case failure(message: String)

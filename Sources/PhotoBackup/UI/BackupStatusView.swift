@@ -67,15 +67,32 @@ struct BackupStatusView: View {
                         appState.cancelBackup()
                     }
                 }
+            } else if let preview = appState.pendingPreview {
+                previewBox(preview)
             } else {
-                Button("Backup jetzt starten") {
-                    // Ohne das kann das Fenster beim Start (z.B. während des NAS-Mountens)
-                    // in den Hintergrund rutschen und wirkt dann, als hätte der Klick nichts
-                    // bewirkt.
-                    NSApp.activate(ignoringOtherApps: true)
-                    Task { await appState.startBackup(trigger: .manual) }
+                HStack {
+                    Button("Backup jetzt starten") {
+                        // Ohne das kann das Fenster beim Start (z.B. während des NAS-Mountens)
+                        // in den Hintergrund rutschen und wirkt dann, als hätte der Klick nichts
+                        // bewirkt.
+                        NSApp.activate(ignoringOtherApps: true)
+                        Task { await appState.startBackup(trigger: .manual) }
+                    }
+                    .disabled(!appState.canStartBackup)
+
+                    if appState.previewInProgress {
+                        ProgressView().controlSize(.small)
+                        Text("Prüfe…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Vorschau…") {
+                            NSApp.activate(ignoringOtherApps: true)
+                            Task { await appState.loadPreview() }
+                        }
+                        .disabled(!appState.canStartBackup)
+                    }
                 }
-                .disabled(!appState.canStartBackup)
 
                 if let result = appState.lastBackupResult {
                     HStack(alignment: .top, spacing: 6) {
@@ -88,6 +105,57 @@ struct BackupStatusView: View {
                 }
             }
         }
+    }
+
+    /// Ergebnis des Trockenlaufs mit Bestätigung. Löschungen sind bewusst hervorgehoben:
+    /// Im Spiegel-Modus sind sie der einzige Teil, der sich nicht rückgängig machen lässt.
+    @ViewBuilder
+    private func previewBox(_ preview: BackupPreview) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Vorschau — es wurde noch nichts geändert")
+                .font(.callout.weight(.semibold))
+
+            if preview.hasChanges {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("\(preview.newCount) neu", systemImage: "plus.circle")
+                    Label("\(preview.changedCount) geändert", systemImage: "arrow.triangle.2.circlepath")
+                    Label("\(preview.deletedCount) werden gelöscht", systemImage: "trash")
+                        .foregroundStyle(preview.deletedCount > 0 ? Color.red : Color.secondary)
+                }
+                .font(.callout)
+
+                if !preview.deletedSamples.isEmpty {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(preview.deletedSamples, id: \.self) { path in
+                            Text(path)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if preview.deletedCount > preview.deletedSamples.count {
+                            Text("… und \(preview.deletedCount - preview.deletedSamples.count) weitere")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Keine Unterschiede — das Backup ist aktuell.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Backup jetzt starten") {
+                    Task { await appState.startPreviewedBackup() }
+                }
+                .disabled(!appState.canStartBackup)
+                Button("Verwerfen") { appState.dismissPreview() }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
     }
 
     private var phaseLabel: String {

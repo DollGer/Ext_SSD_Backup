@@ -45,6 +45,7 @@ public final class BackupEngine: @unchecked Sendable {
         targetDir: String,
         excludePatterns: [String],
         includeExtendedAttributes: Bool,
+        maxDeleteCount: Int = 0,
         fileManager: FileManager = .default,
         onProgress: @escaping (BackupProgress) -> Void
     ) async throws -> BackupResult {
@@ -55,6 +56,11 @@ public final class BackupEngine: @unchecked Sendable {
 
         func baseArguments() -> [String] {
             var arguments = ["-a", "--delete"]
+            // Sicherheitsnetz: rsync bricht ab (Status 25), statt bei einer unerwartet
+            // leeren/falschen Quelle das ganze Ziel zu leeren.
+            if maxDeleteCount > 0 {
+                arguments.append("--max-delete=\(maxDeleteCount)")
+            }
             if includeExtendedAttributes {
                 arguments.append("--extended-attributes")
             }
@@ -158,6 +164,76 @@ public final class BackupEngine: @unchecked Sendable {
         process?.terminate()
     }
 
+    /// Trockenlauf: ermittelt, was ein echter Lauf jetzt ändern würde, ohne etwas zu
+    /// schreiben. Bewusst *ohne* `--max-delete`, damit die echte Zahl der Löschungen
+    /// sichtbar wird — das Limit soll hier nicht die Anzeige beschneiden.
+    public func preview(
+        source: String,
+        targetDir: String,
+        excludePatterns: [String],
+        includeExtendedAttributes: Bool
+    ) async throws -> BackupPreview {
+        let source = source.hasSuffix("/") ? source : source + "/"
+        let destination = targetDir.hasSuffix("/") ? targetDir : targetDir + "/"
+
+        var arguments = ["-a", "--delete"]
+        if includeExtendedAttributes {
+            arguments.append("--extended-attributes")
+        }
+        for pattern in excludePatterns {
+            arguments.append("--exclude=\(pattern)")
+        }
+        arguments += ["-n", "--itemize-changes", source, destination]
+
+        let process = Process()
+        self.process = process
+        process.executableURL = URL(fileURLWithPath: Self.rsyncPath)
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            self.process = nil
+            throw BackupEngineError.launchFailed(error.localizedDescription)
+        }
+
+        let output = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+            process.terminationHandler = { _ in
+                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
+            }
+        }
+        self.process = nil
+        return Self.parsePreview(from: output)
+    }
+
+    /// Klassifiziert die `--itemize-changes`-Zeilen eines Trockenlaufs.
+    /// `*deleting …` = Löschung, `+++++++` in den Attributflags = neu, alles andere
+    /// (z.B. `>f.s.....`) = geändert.
+    static func parsePreview(from output: String, maxSamples: Int = 8) -> BackupPreview {
+        var preview = BackupPreview()
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = collapsingBackspaces(String(rawLine))
+            guard let path = parseItemizeLine(line) else { continue }
+
+            if line.hasPrefix("*deleting") {
+                preview.deletedCount += 1
+                if preview.deletedSamples.count < maxSamples {
+                    preview.deletedSamples.append(path)
+                }
+            } else if line.contains("+++++++") {
+                preview.newCount += 1
+            } else {
+                preview.changedCount += 1
+            }
+        }
+        return preview
+    }
+
     /// Ermittelt die echte Gesamtzahl der zu verarbeitenden Dateien über einen `--dry-run`.
     private func preScanFileCount(baseArguments: [String], source: String, destination: String) async -> Int? {
         let process = Process()
@@ -256,9 +332,13 @@ public final class BackupEngine: @unchecked Sendable {
                 guard !line.isEmpty, parseItemizeLine(line) == nil else { return false }
                 guard !statsLinePrefixes.contains(where: { line.hasPrefix($0) }) else { return false }
                 let lower = line.lowercased()
+                // "Deletions stopped due to --max-delete limit" enthält keines der übrigen
+                // Schlüsselwörter, ist aber genau die Meldung des Sicherheitsnetzes — ohne
+                // diesen Fall würde sie als Statistik durchrutschen und der Nutzer bekäme
+                // wieder nur "sent … bytes" statt der eigentlichen Ursache zu sehen.
                 return lower.contains("rsync:") || lower.contains("rsync error") || lower.contains("error")
                     || lower.contains("denied") || lower.contains("failed") || lower.contains("cannot")
-                    || lower.contains("no such file")
+                    || lower.contains("no such file") || lower.contains("max-delete")
             }
     }
 }

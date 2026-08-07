@@ -4,12 +4,20 @@ import Combine
 
 /// Erkennt, ob die externe Platte gemountet ist. Event-getrieben über
 /// `NSWorkspace`-Mount/Unmount-Notifications statt Polling; der tatsächliche
-/// Zustand wird jeweils über `FileManager.fileExists` am erwarteten Pfad neu
-/// abgeleitet (robuster als das Parsen des Notification-`userInfo`), was auch
-/// `checkNow()` beim App-Start oder nach einer Einstellungsänderung erlaubt.
+/// Zustand wird jeweils neu abgeleitet (robuster als das Parsen des
+/// Notification-`userInfo`), was auch `checkNow()` beim App-Start oder nach einer
+/// Einstellungsänderung erlaubt.
 /// Zusätzlich ein grober 30-Sekunden-Fallback-Timer: manche Laufwerke (z.B.
 /// exFAT über FSKit) lösen `didMountNotification` nicht zuverlässig aus, sodass
 /// sich der Zustand sonst dauerhaft festfressen kann.
+///
+/// Bewusst über die Liste tatsächlich gemounteter Volumes statt über
+/// `FileManager.fileExists` am erwarteten Pfad: Letzteres kann einen echten Mount nicht
+/// von einem gleichnamigen leeren Verzeichnis unterscheiden. Beide Fälle sind real und
+/// gefährlich, weil der Backup-Lauf mit `--delete` bei leerer Quelle das komplette Ziel
+/// löschen würde: macOS lässt nach unsauberem Auswerfen mitunter ein leeres Verzeichnis
+/// in `/Volumes` zurück, und ein leerer Laufwerksname ergibt den Pfad `/Volumes/` —
+/// der immer existiert.
 @MainActor
 public final class VolumeMonitor: ObservableObject {
     @Published public private(set) var isMounted: Bool = false
@@ -67,9 +75,19 @@ public final class VolumeMonitor: ObservableObject {
     }
 
     public func checkNow() {
-        var isDirectory: ObjCBool = false
-        let path = "/Volumes/\(volumeName)"
-        isMounted = fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+        let volumes = fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: [.skipHiddenVolumes]
+        ) ?? []
+        isMounted = Self.isMounted(volumeName: volumeName, mountedVolumeURLs: volumes)
+    }
+
+    /// Reine Kernprüfung ohne I/O — trennbar testbar.
+    nonisolated static func isMounted(volumeName: String, mountedVolumeURLs: [URL]) -> Bool {
+        let trimmed = volumeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let target = URL(fileURLWithPath: "/Volumes/\(trimmed)").standardizedFileURL
+        return mountedVolumeURLs.contains { $0.standardizedFileURL == target }
     }
 
     deinit {

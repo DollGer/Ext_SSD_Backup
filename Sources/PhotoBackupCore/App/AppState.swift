@@ -30,6 +30,9 @@ public final class AppState: ObservableObject {
     @Published public private(set) var transferStartDate: Date?
     @Published public private(set) var lastBackupResult: BackupResult?
     @Published public var lastErrorMessage: String?
+    @Published public private(set) var previewInProgress: Bool = false
+    /// Ergebnis eines Trockenlaufs, das auf die Entscheidung des Nutzers wartet.
+    @Published public private(set) var pendingPreview: BackupPreview?
 
     public var canStartBackup: Bool {
         driveMounted && nasReachable && !backupInProgress
@@ -114,27 +117,35 @@ public final class AppState: ObservableObject {
         }
 
         do {
-            if !smbMounter.isMounted(mountPoint: settings.nasMountPoint) {
-                BackupLogger.log("NAS nicht gemountet, versuche zu mounten (host=\(settings.nasHost), share=\(settings.nasShare))")
-                guard let password = try keychain.readPassword(), !password.isEmpty else {
-                    throw KeychainError.readFailed(errSecItemNotFound)
-                }
-                try await smbMounter.mount(
-                    host: settings.nasHost,
-                    share: settings.nasShare,
-                    user: settings.nasUser,
-                    password: password,
-                    mountPoint: settings.nasMountPoint
-                )
-                BackupLogger.log("NAS-Mount erfolgreich")
-            }
-            nasMounted = true
+            try await ensureNASMounted()
         } catch {
             BackupLogger.log("NAS-Mount fehlgeschlagen: \(error.localizedDescription)")
             lastErrorMessage = error.localizedDescription
             lastBackupResult = .failure(message: error.localizedDescription)
             settings.lastBackupSucceeded = false
+            scheduler.recordOutcome(.failed)
             await notify(title: "Backup fehlgeschlagen", message: error.localizedDescription)
+            return
+        }
+
+        // Zweite Schutzebene gegen den Totalverlust-Fall (siehe BackupPreflight). Läuft
+        // abseits des MainActors, weil die Ziel-Prüfung über den SMB-Mount geht.
+        let sourcePath = settings.sourcePath
+        let targetPath = settings.targetDir
+        let refusal = await Task.detached(priority: .utility) { () -> String? in
+            BackupPreflight.refusalReason(
+                sourceIsEmpty: BackupPreflight.isEmptyDirectory(atPath: sourcePath),
+                targetIsEmpty: BackupPreflight.isEmptyDirectory(atPath: targetPath)
+            )
+        }.value
+
+        if let refusal {
+            BackupLogger.log("Vorabprüfung abgelehnt: \(refusal)")
+            lastErrorMessage = refusal
+            lastBackupResult = .failure(message: refusal)
+            settings.lastBackupSucceeded = false
+            scheduler.recordOutcome(.failed)
+            await notify(title: "Backup abgebrochen", message: refusal)
             return
         }
 
@@ -147,6 +158,7 @@ public final class AppState: ObservableObject {
             targetDir: settings.targetDir,
             excludePatterns: settings.rsyncExcludePatterns,
             includeExtendedAttributes: settings.includeExtendedAttributes,
+            maxDeleteCount: settings.maxDeleteCount,
             onProgress: { [weak self] progress in
                 Task { @MainActor in
                     guard let self else { return }
@@ -177,16 +189,83 @@ public final class AppState: ObservableObject {
             BackupLogger.log("Backup erfolgreich: \(filesTransferred) Dateien übertragen, Dauer=\(Int(duration))s")
             settings.lastBackupDate = Date()
             settings.lastBackupSucceeded = true
+            scheduler.recordOutcome(.succeeded)
             await notify(title: "Backup abgeschlossen", message: "\(filesTransferred) Dateien übertragen.")
         case .failure(let message):
             BackupLogger.log("Backup fehlgeschlagen: \(message)")
             settings.lastBackupSucceeded = false
             lastErrorMessage = message
+            scheduler.recordOutcome(.failed)
             await notify(title: "Backup fehlgeschlagen", message: message)
         case .cancelled:
             BackupLogger.log("Backup abgebrochen")
             settings.lastBackupSucceeded = false
+            scheduler.recordOutcome(.cancelledByUser)
         }
+    }
+
+    /// Gemeinsamer Mount-Schritt für Backup-Lauf und Trockenlauf-Vorschau.
+    private func ensureNASMounted() async throws {
+        if !smbMounter.isMounted(mountPoint: settings.nasMountPoint) {
+            BackupLogger.log("NAS nicht gemountet, versuche zu mounten (host=\(settings.nasHost), share=\(settings.nasShare))")
+            guard let password = try keychain.readPassword(), !password.isEmpty else {
+                throw KeychainError.readFailed(errSecItemNotFound)
+            }
+            try await smbMounter.mount(
+                host: settings.nasHost,
+                share: settings.nasShare,
+                user: settings.nasUser,
+                password: password,
+                mountPoint: settings.nasMountPoint
+            )
+            BackupLogger.log("NAS-Mount erfolgreich")
+        }
+        nasMounted = true
+    }
+
+    /// Ermittelt per Trockenlauf, was ein echter Lauf ändern würde. Ergebnis landet in
+    /// `pendingPreview` und wartet dort auf `startPreviewedBackup()` oder `dismissPreview()`.
+    public func loadPreview() async {
+        guard !backupInProgress, !previewInProgress else { return }
+        previewInProgress = true
+        pendingPreview = nil
+        defer { previewInProgress = false }
+
+        do {
+            try await ensureNASMounted()
+        } catch {
+            BackupLogger.log("Vorschau: NAS-Mount fehlgeschlagen: \(error.localizedDescription)")
+            lastErrorMessage = error.localizedDescription
+            return
+        }
+
+        BackupLogger.log("Vorschau (Trockenlauf) gestartet")
+        let engine = BackupEngine()
+        backupEngine = engine
+        defer { backupEngine = nil }
+
+        do {
+            let preview = try await engine.preview(
+                source: settings.sourcePath,
+                targetDir: settings.targetDir,
+                excludePatterns: settings.rsyncExcludePatterns,
+                includeExtendedAttributes: settings.includeExtendedAttributes
+            )
+            BackupLogger.log("Vorschau: \(preview.newCount) neu, \(preview.changedCount) geändert, \(preview.deletedCount) zu löschen")
+            pendingPreview = preview
+        } catch {
+            BackupLogger.log("Vorschau fehlgeschlagen: \(error.localizedDescription)")
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    public func dismissPreview() {
+        pendingPreview = nil
+    }
+
+    public func startPreviewedBackup() async {
+        pendingPreview = nil
+        await startBackup(trigger: .manual)
     }
 
     public func cancelBackup() {

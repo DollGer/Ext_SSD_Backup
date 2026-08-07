@@ -179,6 +179,118 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertFalse(fileManager.fileExists(atPath: target.appendingPathComponent("delete-me.txt").path))
     }
 
+    /// Sicherheitsnetz gegen den Totalverlust-Fall: Wäre die Quelle unerwartet (fast) leer,
+    /// bricht rsync ab, statt das Ziel zu leeren.
+    func testMaxDeleteLimitStopsMassDeletionAndIsReportedAsFailure() async throws {
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = base.appendingPathComponent("source")
+        let target = base.appendingPathComponent("target")
+        try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: base) }
+
+        // Ziel voll, Quelle praktisch leer — ohne Limit würde alles gelöscht.
+        for i in 0..<10 {
+            fileManager.createFile(atPath: target.appendingPathComponent("alt\(i).txt").path, contents: Data("alt".utf8))
+        }
+        fileManager.createFile(atPath: source.appendingPathComponent("neu.txt").path, contents: Data("neu".utf8))
+
+        let engine = BackupEngine()
+        let result = try await engine.run(
+            source: source.path,
+            targetDir: target.path,
+            excludePatterns: [],
+            includeExtendedAttributes: false,
+            maxDeleteCount: 3,
+            onProgress: { _ in }
+        )
+
+        guard case .failure(let message) = result else {
+            XCTFail("expected .failure, got \(result)")
+            return
+        }
+        // Die eigentliche Ursache muss sichtbar sein, nicht die rsync-Schlussstatistik.
+        XCTAssertTrue(message.lowercased().contains("max-delete"), "unerwartete Meldung: \(message)")
+
+        let remaining = try fileManager.contentsOfDirectory(atPath: target.path)
+        XCTAssertGreaterThan(remaining.count, 3, "Limit hat die Massenlöschung nicht gestoppt")
+    }
+
+    func testMaxDeleteLineIsRecognizedAsError() {
+        let output = """
+        Deletions stopped due to --max-delete limit (6 skipped)
+        Number of files: 8
+        sent 640 bytes  received 164 bytes  730909 bytes/sec
+        """
+        XCTAssertEqual(
+            BackupEngine.extractErrorLines(from: output),
+            ["Deletions stopped due to --max-delete limit (6 skipped)"]
+        )
+    }
+
+    // MARK: - Trockenlauf-Vorschau
+
+    func testParsePreviewClassifiesLines() {
+        let output = """
+        *deleting wegordner/drin.txt
+        *deleting wegordner/
+        *deleting weg2.txt
+        >f.s..... geaendert.txt
+        >f+++++++ neu.txt
+        cd+++++++ sub/
+        """
+        let preview = BackupEngine.parsePreview(from: output)
+        XCTAssertEqual(preview.deletedCount, 3)
+        XCTAssertEqual(preview.changedCount, 1)
+        XCTAssertEqual(preview.newCount, 2)
+        XCTAssertEqual(preview.deletedSamples, ["wegordner/drin.txt", "wegordner/", "weg2.txt"])
+    }
+
+    func testParsePreviewIgnoresStatsAndLimitsSamples() {
+        var lines = (0..<20).map { "*deleting datei\($0).txt" }
+        lines += ["Number of files: 20", "sent 640 bytes  received 164 bytes  730909 bytes/sec"]
+        let preview = BackupEngine.parsePreview(from: lines.joined(separator: "\n"), maxSamples: 3)
+        XCTAssertEqual(preview.deletedCount, 20)
+        XCTAssertEqual(preview.deletedSamples.count, 3)
+        XCTAssertEqual(preview.newCount, 0)
+        XCTAssertEqual(preview.changedCount, 0)
+    }
+
+    func testParsePreviewOnUnchangedTreeReportsNoChanges() {
+        XCTAssertFalse(BackupEngine.parsePreview(from: "Number of files: 3\n").hasChanges)
+    }
+
+    /// Echter Trockenlauf: muss die geplanten Änderungen melden, ohne irgendetwas
+    /// am Ziel anzufassen.
+    func testPreviewReportsPlannedChangesWithoutTouchingTarget() async throws {
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = base.appendingPathComponent("source")
+        let target = base.appendingPathComponent("target")
+        try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: base) }
+
+        fileManager.createFile(atPath: source.appendingPathComponent("neu.txt").path, contents: Data("neu".utf8))
+        fileManager.createFile(atPath: target.appendingPathComponent("weg.txt").path, contents: Data("weg".utf8))
+
+        let engine = BackupEngine()
+        let preview = try await engine.preview(
+            source: source.path,
+            targetDir: target.path,
+            excludePatterns: [],
+            includeExtendedAttributes: false
+        )
+
+        XCTAssertEqual(preview.newCount, 1)
+        XCTAssertEqual(preview.deletedCount, 1)
+        XCTAssertEqual(preview.deletedSamples, ["weg.txt"])
+        // Entscheidend: Der Trockenlauf darf nichts verändert haben.
+        XCTAssertTrue(fileManager.fileExists(atPath: target.appendingPathComponent("weg.txt").path))
+        XCTAssertFalse(fileManager.fileExists(atPath: target.appendingPathComponent("neu.txt").path))
+    }
+
     func testCancelledRunReturnsCancelled() async throws {
         let fileManager = FileManager.default
         let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -303,6 +303,21 @@ private struct AdvancedTab: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
+                Text("Sicherheitsnetz")
+                    .font(.headline)
+                HStack {
+                    Text("Max. Löschungen pro Lauf")
+                    TextField("Anzahl", value: $settings.maxDeleteCount, format: .number)
+                        .frame(width: 80)
+                }
+                Text("Da das Backup ein 1:1-Spiegel ist, würde eine leere oder falsch erkannte Quelle das gesamte Ziel löschen. Bei mehr als dieser Anzahl Löschungen bricht der Lauf stattdessen ab. 0 = keine Grenze.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Ausschlussmuster")
                     .font(.headline)
                 ForEach(settings.rsyncExcludePatterns, id: \.self) { pattern in
